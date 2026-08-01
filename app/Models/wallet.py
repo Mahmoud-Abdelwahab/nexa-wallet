@@ -1,25 +1,29 @@
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum as SQLEnum, ForeignKey, Numeric, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import ForeignKey, Numeric, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.enums import Currency, WalletStatus
 from app.database import Base
 
-
-class WalletStatus(str, Enum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    SUSPENDED = "suspended"
+if TYPE_CHECKING:
+    from app.models.ledger_entry import LedgerEntry
+    from app.models.transaction import Transaction
+    from app.models.user import User
 
 
 class Wallet(Base):
     __tablename__ = "wallets"
 
     __table_args__ = (
-        UniqueConstraint("user_id", "currency",
-                         name="uq_wallet_user_currency"),
+        UniqueConstraint(
+            "user_id",
+            "currency",
+            name="uq_wallet_user_currency",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -29,8 +33,8 @@ class Wallet(Base):
         nullable=False,
     )
 
-    currency: Mapped[str] = mapped_column(
-        String(3),
+    currency: Mapped[Currency] = mapped_column(
+        SQLEnum(Currency),
         nullable=False,
     )
 
@@ -55,4 +59,23 @@ class Wallet(Base):
         default=datetime.now,
         onupdate=datetime.now,
         nullable=False,
+    )
+
+    user: Mapped["User"] = relationship(
+        back_populates="wallets",
+    )
+
+    sent_transactions: Mapped[list["Transaction"]] = relationship(
+        foreign_keys="Transaction.sender_wallet_id",
+        back_populates="sender_wallet",
+    )
+
+    received_transactions: Mapped[list["Transaction"]] = relationship(
+        foreign_keys="Transaction.receiver_wallet_id",
+        back_populates="receiver_wallet",
+    )
+
+    # 1 wallet can have many ledger entries
+    ledger_entries: Mapped[list["LedgerEntry"]] = relationship(
+    back_populates="wallet",
     )

@@ -22,7 +22,9 @@ engine = create_engine(
 #  why it named SessionLocal ? it just means that this session is linked to this request 
 # and will be closed after the request is done, so it is local to the request and you can name it as you want but this is commonly used name
 SessionLocal = sessionmaker(
-    bind=engine
+    bind=engine,
+    # autocommit=False,
+    autoflush=False,
 )
  
  # Dependency
