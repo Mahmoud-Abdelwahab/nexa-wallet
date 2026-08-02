@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-# from app.database_init import init_db
 from app.api.health import router as health_router
 from app.core.config import settings
 

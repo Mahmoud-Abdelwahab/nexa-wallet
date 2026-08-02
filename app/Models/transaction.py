@@ -41,9 +41,12 @@ class Transaction(Base):
     )
 
     currency: Mapped[Currency] = mapped_column(
-        SQLEnum(Currency),
-        nullable=False,
-    )
+    SQLEnum(
+        Currency,
+        name="currency",
+    ),
+    nullable=False,
+)
 
     status: Mapped[TransactionStatus] = mapped_column(
         SQLEnum(TransactionStatus),

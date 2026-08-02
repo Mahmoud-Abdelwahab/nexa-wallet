@@ -73,9 +73,12 @@ class LedgerEntry(Base):
     )
 
     currency: Mapped[Currency] = mapped_column(
-        SQLEnum(Currency),
-        nullable=False,
-    )
+    SQLEnum(
+        Currency,
+        name="currency",
+    ),
+    nullable=False,
+)
 
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.now,
