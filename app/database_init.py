@@ -1,12 +1,14 @@
 
-import app.models
-from app.database import Base, engine
+# import app.models
+# from app.database import Base, engine
 
 
-# this file resposible for loading Models and creating the database tables##
-### ---- ONce we learn Alembic this file will be for testing not production env as we will use it in creating tables and manage DB migrations and versioning ---- ###
-#### Alembic manage the DB Schema 
+# # this file resposible for loading Models and creating the database tables##
+# ### ---- ONce we learn Alembic this file will be for testing not production env as we will use it in creating tables and manage DB migrations and versioning ---- ###
+# #### Alembic manage the DB Schema 
 
 
-def init_db():
-    Base.metadata.create_all(bind=engine)
+# def init_db():
+#     Base.metadata.create_all(bind=engine)
+
+## No need for it now as we alreadt create the DB using Alembic and we will use Alembic to manage the DB Schema and migrations and versioning
