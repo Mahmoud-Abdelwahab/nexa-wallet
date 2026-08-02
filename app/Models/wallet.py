@@ -34,9 +34,12 @@ class Wallet(Base):
     )
 
     currency: Mapped[Currency] = mapped_column(
-        SQLEnum(Currency),
-        nullable=False,
-    )
+    SQLEnum(
+        Currency,
+        name="currency",
+    ),
+    nullable=False,
+)
 
     balance: Mapped[Decimal] = mapped_column(
         Numeric(19, 4),
