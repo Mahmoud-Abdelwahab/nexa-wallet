@@ -13,9 +13,14 @@ class UserRepository:
         statement = select(User).where(User.username == username)
         return self.db.scalar(statement)
 
-    def get_by_id(self, user_id: int) -> User | None:
-        statement = select(User).where(User.id == user_id)
+    def get_by_email(self, email: str) -> User | None:
+        statement = select(User).where(User.email == email)
         return self.db.scalar(statement)
+
+    def get_by_id(self, user_id: int) -> User | None:
+        # statement = select(User).where(User.id == user_id)
+        # return self.db.scalar(statement)
+         return self.db.get(User, user_id)  # get method is more efficient than select statement for primary key lookups
 
     def create(self, user: User) -> User:
         self.db.add(user)
