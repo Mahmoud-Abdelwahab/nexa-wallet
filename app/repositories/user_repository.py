@@ -22,6 +22,10 @@ class UserRepository:
         # return self.db.scalar(statement)
          return self.db.get(User, user_id)  # get method is more efficient than select statement for primary key lookups
 
+    def get_by_mobile(self, mobile: str) -> User | None:
+            statement = select(User).where(User.mobile == mobile)
+            return self.db.scalar(statement)
+    
     def create(self, user: User) -> User:
         self.db.add(user)
         return user

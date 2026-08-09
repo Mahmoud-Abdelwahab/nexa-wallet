@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.models.wallet import Wallet
 from app.repositories import UserRepository, WalletRepository
-from app.core.security import hash_password
+from app.core.security import create_access_token, hash_password
+from app.schemas.authentication import AuthResponse, UserResponse
 
 
 class AuthService:
@@ -22,11 +23,11 @@ class AuthService:
         password: str,
         mobile: str,
         date_of_birth: date,
-    ) -> User:
+    ) -> AuthResponse:
 
         # Check if username or email is already taken
-        if self.user_repository.get_by_username(username):
-            raise ValueError("Username already taken")
+        if self.user_repository.get_by_mobile(mobile):
+            raise ValueError("Mobile number already registered")
 
         if self.user_repository.get_by_email(email):
             raise ValueError("Email already registered")
@@ -61,9 +62,23 @@ class AuthService:
             # Commit User + Wallet together
             self.db.commit()
 
-            return user
-
         except Exception:
             # Rollback everything if any operation fails
             self.db.rollback()
             raise
+
+        # Create token ONLY after successful commit
+        access_token = create_access_token(
+            data={"sub": str(user.id)}
+        )
+
+        return AuthResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserResponse(
+                id=user.id,
+                username=user.username,
+                email=user.email,
+                mobile=user.mobile,
+            ),
+        )
