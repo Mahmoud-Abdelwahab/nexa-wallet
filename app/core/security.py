@@ -43,9 +43,26 @@ def create_access_token(
             "exp": expire
         }
     )
-
+    # encodes the payload (data) into a JWT token using the secret key and algorithm specified in the settings. The resulting token can be used for authentication and authorization purposes.
+    # It do four things :
+    # 1. Create a copy of the input data to avoid modifying the original dictionary.
+    # 2. Calculate the expiration time for the token based on the current time and the configured expiration duration (in minutes).
+    # 3. Update the copied data with the expiration time
+    # 4. Encode the updated data into a JWT token using the secret key and algorithm
     return jwt.encode(
         to_encode,
         settings.secret_key,
         algorithm=settings.algorithm,
+    )
+
+def decode_access_token(token: str) -> dict:
+    # Decode the JWT token and return the payload as a dictionary. If the token is invalid or expired, an exception will be raised.
+    # it do three things :
+    # 1. Verify the signature of the token using the secret key and algorithm specified in the settings.
+    # 2. Check the expiration time of the token and raise an exception if it has expired.
+    # 3. Check Algorithm Verification and Return the payload of the token as a dictionary if the
+    return jwt.decode(
+        token,
+        settings.secret_key,
+        algorithms=[settings.algorithm],
     )
