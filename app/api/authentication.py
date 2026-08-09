@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas.authentication import AuthResponse, RegisterRequest
+from app.schemas.authentication import AuthResponse, LoginRequest, RegisterRequest
 from app.services.auth_service import AuthService
 
 router = APIRouter(
@@ -29,6 +29,25 @@ def register(
             password=request.password,
             mobile=request.mobile,
             date_of_birth=request.date_of_birth,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post(
+    "/login",
+    response_model=AuthResponse,
+)
+def login(
+    request: LoginRequest,
+    db: Session = Depends(get_db),
+):
+    service = AuthService(db)
+
+    try:
+        return service.login_user(
+            email=request.email,
+            password=request.password,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
