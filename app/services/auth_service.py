@@ -5,8 +5,12 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.models.wallet import Wallet
 from app.repositories import UserRepository, WalletRepository
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.schemas.authentication import AuthResponse, UserResponse
+
+# prevent Timing Side-Channel
+# dummy passsword we use to prevent timing attacks when the user does not exist. This ensures that the time taken for the operation is consistent, regardless of whether the user exists or not.
+DUMMY_PASSWORD_HASH = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeg6Lruj3vjPGga31lW"
 
 
 class AuthService:
@@ -24,6 +28,7 @@ class AuthService:
         mobile: str,
         date_of_birth: date,
     ) -> AuthResponse:
+        email = email.lower()
 
         # Check if username or email is already taken
         if self.user_repository.get_by_mobile(mobile):
@@ -68,6 +73,28 @@ class AuthService:
             raise
 
         # Create token ONLY after successful commit
+        return self._build_auth_response(user)
+
+    def login_user(self, email: str, password: str) -> AuthResponse:
+        email = email.lower()
+
+        user = self.user_repository.get_by_email(email)
+
+        if user:
+            # If the user exists, we verify the actual password hash
+            is_password_valid = verify_password(password, user.password_hash)
+        else:
+            # If the user does not exist, we still call verify_password with the dummy hash to prevent timing attacks
+            # Note: This is a security measure to prevent timing attacks. We always call verify_password, even if the user doesn't exist, to ensure that the time taken for the operation is consistent.
+            verify_password(password, DUMMY_PASSWORD_HASH)
+            is_password_valid = False
+
+        if not user or not is_password_valid:
+            raise ValueError("Invalid email or password")
+
+        return self._build_auth_response(user)
+
+    def _build_auth_response(self, user: User) -> AuthResponse:
         access_token = create_access_token(
             data={"sub": str(user.id)}
         )
