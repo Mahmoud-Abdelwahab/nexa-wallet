@@ -27,6 +27,13 @@ def get_current_user(
      db: Session = Depends(get_db),
 ):
     token = credentials.credentials
+    try:
+        payload = decode_access_token(token)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+        )
     payload = decode_access_token(token)
     user_id = payload.get("sub")
 
