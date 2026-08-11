@@ -2,6 +2,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from app.mappers.user_mapper import UserMapper
 from app.models.user import User
 from app.models.wallet import Wallet
 from app.repositories import UserRepository, WalletRepository
@@ -102,10 +103,5 @@ class AuthService:
         return AuthResponse(
             access_token=access_token,
             token_type="bearer",
-            user=UserResponse(
-                id=user.id,
-                username=user.username,
-                email=user.email,
-                mobile=user.mobile,
-            ),
+            user=UserMapper.to_response(user),
         )

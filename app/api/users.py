@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_current_user
+from app.mappers.user_mapper import UserMapper
 from app.models.user import User
 from app.schemas.authentication import UserResponse
 
@@ -16,9 +17,4 @@ router = APIRouter(
 def get_me(
     current_user: User = Depends(get_current_user),
 ):
-     return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        mobile=current_user.mobile,
-    )
+     return UserMapper.to_response(current_user) # mapping user model to user response schema to return only the required fields in the response.

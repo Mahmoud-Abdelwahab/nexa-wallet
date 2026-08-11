@@ -20,12 +20,18 @@ from app.repositories import UserRepository
 #         └───────────────┬───────────────┘
 #                         ▼
 #                        User
-bearer_scheme = HTTPBearer() # This creates an instance of the HTTPBearer class, which is a security scheme that expects an HTTP Authorization header with a Bearer token. It will be used to extract the token from incoming requests.
-
+bearer_scheme = HTTPBearer(auto_error=False) # This creates an instance of the HTTPBearer class, which is a security scheme that expects an HTTP Authorization header with a Bearer token. It will be used to extract the token from incoming requests.
+# auto_error=False means that if the Authorization header is missing or invalid, FastAPI will not automatically raise an error. Instead, it will return None, allowing you to handle the error manually in your code. This is useful for custom error handling and providing more informative responses to the client.
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-     db: Session = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
     token = credentials.credentials
     try:
         payload = decode_access_token(token)
@@ -34,7 +40,7 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
         )
-    payload = decode_access_token(token)
+    
     user_id = payload.get("sub")
 
     if user_id is None:
