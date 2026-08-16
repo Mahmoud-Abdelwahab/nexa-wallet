@@ -64,5 +64,7 @@ class UserService:
         user.password_hash = hash_password(
             request.new_password
         )
-
+        # Increment token_version to invalidate existing JWT tokens
+        # once password change is successfull, then the jwt token will be invalidated because the token_version in the database will be different from the token_version in the jwt token, so the user will have to login again to get a new jwt token with the new token_version.
+        user.token_version += 1 
         self.db.commit()
