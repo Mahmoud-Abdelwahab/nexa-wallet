@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 
+from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.repositories import UserRepository
+from app.schemas.changePasswordRequest import ChangePasswordRequest
 from app.schemas.updateUserRequest import UpdateUserRequest
 
 
@@ -39,3 +41,28 @@ class UserService:
         self.db.refresh(user) 
 
         return user
+
+
+    def change_password(
+        self,
+        user: User,
+        request: ChangePasswordRequest,
+    ) -> None:
+
+        if not verify_password(
+            request.current_password,
+            user.password_hash,
+        ):
+            raise ValueError("Current password is incorrect")
+
+        if request.new_password != request.confirm_password:
+            raise ValueError("New Passwords and confirm password do not match")
+
+        if request.current_password == request.new_password:
+            raise ValueError("New password cannot be the same as the current password")
+        
+        user.password_hash = hash_password(
+            request.new_password
+        )
+
+        self.db.commit()

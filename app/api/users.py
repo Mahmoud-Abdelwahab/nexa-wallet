@@ -3,6 +3,8 @@ from app.api.dependencies import get_current_user
 from app.mappers.user_mapper import UserMapper
 from app.models.user import User
 from app.schemas.authentication import UserResponse
+from app.schemas.changePasswordRequest import ChangePasswordRequest
+
 from app.schemas.updateUserRequest import UpdateUserRequest
 from app.services.user_service import UserService
 from sqlalchemy.orm import Session
@@ -45,3 +47,26 @@ def update_me(
         )
 
     return UserMapper.to_response(user)
+
+@router.post(
+    "/me/change-password",
+    status_code=status.HTTP_200_OK,
+)
+def change_password(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    service = UserService(db)
+
+    try:
+        service.change_password(
+            user=current_user,
+            request=request,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    return {"message": "Password changed successfully"}
