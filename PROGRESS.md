@@ -26,6 +26,7 @@ A running log of everything built in this project so far. Updated after every ne
 - **Transaction Type:** `Transfer`, `TopUp`, `Withdraw` (LedgerEntryType additionally has `FEE`, `TAX`, `CASHBACK`).
 - **Locking:** row locks are used while executing a transfer, but released before waiting on the bank's response — the lock is released right after the Pending transaction is created.
 - **Wallet uniqueness:** `UniqueConstraint(user_id, currency)` — a user can have multiple wallets, but only one per currency.
+- **User identity fields:** `email` and `mobile` are unique identifiers. `username` is intentionally **not** unique — it's just a display name, not used to look up or identify a user.
 
 ---
 
@@ -78,6 +79,11 @@ The Router looks up the matching Endpoint; if no route matches, FastAPI returns 
 - **Service layer**: raises plain Python exceptions (`ValueError`) describing a business-logic problem only — it has no concept of HTTP at all.
 - **Router/API layer**: the only place responsible for translating that exception into a status code + response shape (`HTTPException`).
 - This separation lets the same Service be reused from anywhere other than HTTP (CLI, background job, tests) without any dependency on FastAPI.
+- **Code placed right after a `try/except` block** (same indentation as `try`) only runs on the success path — if the `try` body raises and the `except` re-raises (e.g. as `HTTPException`), execution exits the function immediately and never reaches that code. This is what makes `return {"message": "..."}` after a try/except safe to use as the "operation succeeded" response.
+
+### Partial Updates (PATCH) with Pydantic
+- **`request.model_fields_set`**: tells you exactly which fields the client actually sent in the request body, as opposed to which fields simply have a value (a field can have a default/`None` without being "set"). Used in `update_profile` to only touch the fields the client explicitly provided, instead of overwriting everything on every PATCH call.
+- **`db.refresh(user)`**: after `commit()`, the in-memory object can still be showing stale data — `refresh()` re-reads the row from the database so the object (and the response built from it) reflects the actual committed state.
 
 ---
 
@@ -91,7 +97,7 @@ app/
 │   └── security.py        # hash_password, verify_password, create/decode_access_token
 ├── database.py             # Base, engine, SessionLocal, get_db()
 ├── models/
-│   ├── user.py             # User (username, email, mobile — unique)
+│   ├── user.py             # User (email, mobile — unique; username is NOT unique)
 │   ├── wallet.py           # Wallet (UniqueConstraint(user_id, currency))
 │   ├── transaction.py      # Transaction (sender/receiver wallet, status, currency)
 │   └── ledger_entry.py     # LedgerEntry (direction, entry_type, amount > 0 check)
@@ -101,13 +107,16 @@ app/
 ├── mappers/
 │   └── user_mapper.py      # User (ORM) → UserResponse (schema)
 ├── schemas/
-│   └── authentication.py   # RegisterRequest, LoginRequest, UserResponse, AuthResponse
+│   ├── authentication.py   # RegisterRequest, LoginRequest, UserResponse, AuthResponse
+│   ├── updateUserRequest.py     # UpdateUserRequest (partial update)
+│   └── changePasswordRequest.py # ChangePasswordRequest
 ├── services/
-│   └── auth_service.py     # register_user, login_user (business logic)
+│   ├── auth_service.py     # register_user, login_user (business logic)
+│   └── user_service.py     # update_profile, change_password
 ├── api/
 │   ├── dependencies.py     # get_current_user (JWT auth dependency)
 │   ├── authentication.py   # POST /auth/register, POST /auth/login
-│   ├── users.py             # GET /users/me (protected)
+│   ├── users.py             # GET/PATCH /users/me, POST /users/me/change-password (all protected)
 │   └── health.py
 └── main.py                  # FastAPI app + include_router
 
@@ -166,6 +175,36 @@ JSON
 ```
 Details: `HTTPBearer(auto_error=False)` extracts the token from the header (returns `None` if missing — handled manually as 401) → `decode_access_token()` verifies the signature and expiry → extract `sub` (user id) → look up the user in the database → if missing or invalid, a unified 401.
 
+### Update Profile (`PATCH /users/me`)
+```
+UpdateUserRequest
+   ↓
+model_fields_set (only what the client actually sent)
+   ↓
+update provided fields (mobile checked for duplicates)
+   ↓
+Commit + Refresh
+   ↓
+UserResponse
+```
+
+### Change Password (`POST /users/me/change-password`)
+```
+ChangePasswordRequest
+   ↓
+verify current_password
+   ↓
+new_password == confirm_password?
+   ↓
+new_password != current_password?
+   ↓
+hash_password(new_password)
+   ↓
+Commit
+   ↓
+{"message": "Password changed successfully"}
+```
+
 ---
 
 ## 🐛 Lessons Learned (Worth Remembering)
@@ -185,10 +224,10 @@ Details: `HTTPBearer(auto_error=False)` extracts the token from the header (retu
 - Models: User, Wallet, Transaction, LedgerEntry + their relationships.
 - Database: local PostgreSQL (Homebrew) + Alembic migrations.
 - Auth: Register, Login, JWT (issue + decode), password hashing, protection against timing attacks and user enumeration.
-- `GET /users/me` (first JWT-protected endpoint).
+- `GET /users/me`, `PATCH /users/me` (partial update), `POST /users/me/change-password` — all JWT-protected via `get_current_user`.
 
 **Next:** per the original roadmap — remaining CRUD and Wallet APIs (Balance, Transfer, Transaction Workflow).
 
 ---
 
-_Last updated: after adding `/users/me` and the `get_current_user` dependency._
+_Last updated: after adding `PATCH /users/me` and `POST /users/me/change-password`, and removing the unique constraint on `username`._
