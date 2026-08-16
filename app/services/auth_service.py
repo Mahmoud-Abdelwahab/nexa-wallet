@@ -97,7 +97,10 @@ class AuthService:
 
     def _build_auth_response(self, user: User) -> AuthResponse:
         access_token = create_access_token(
-            data={"sub": str(user.id)}
+            data={
+                "sub": str(user.id),
+                 "token_version": user.token_version,
+                }
         )
 
         return AuthResponse(
