@@ -1,0 +1,52 @@
+
+# This is a docker-compose file that defines services for a web application. It includes configurations for running PostgreSQL and Redis, opening necessary ports, creating volumes for data persistence, and specifying specific versions of the services to ensure compatibility and stability.
+# Run PostgreSQL
+# Run Redis
+# Open ports
+# Create volumes
+# Use specific versions
+
+# docker compose up -d  ---> this command used to run the docker compose file in detached mode, which means it will run in the background and not block the terminal. The -d flag stands for "detached" mode. This command will start all the services defined in the docker-compose.yml file, including PostgreSQL and Redis, and create any necessary volumes for data persistence.
+# docker compose up ----> without the -d flag, the command will run in the foreground and block the terminal. This means that you will see the logs of the services in the terminal, and you will not be able to use the terminal for other commands until you stop the services. This can be useful for debugging or monitoring the services, but it can also be inconvenient if you need to run other commands in the terminal.
+
+# Image vs Container 
+
+# Image is the blueprint or template for creating containers. eg redis:7 OR postgres:16 
+# Container = instance running of an image. eg redis:7 running on port 6379 OR postgres:16 running on port 5432
+
+# redis:7  (Image)
+#    ↓
+# Redis Container
+#    ↓
+# localhost:6379
+
+
+services:  # all services are defined under this key
+  postgres: # PostgreSQL service name you can give it any name you want
+    image: postgres:16
+    environment:
+      POSTGRES_USER: nexa
+      POSTGRES_PASSWORD: nexa_password
+      POSTGRES_DB: nexa_wallet_dev
+    ports:
+      - "5433:5432"  # map the container's port 5432 to the host's port 5433, first 5433 is the host port [Machine], second 5432 is the container port
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data: ## thid means that a volume named postgres_data will be created and mounted to the /var/lib/postgresql/data directory inside the PostgreSQL container. This allows the data stored in the PostgreSQL database to persist even if the container is stopped or removed.
+     
+    #  ======================================= =========================================
+      # docker compose down  --->  this command is used to stop and remove the containers, networks , without removing the volumes created by the docker compose file. This means that any data stored in the volumes will be preserved, and you can start the services again later without losing any data. This command is useful for stopping the services and cleaning up resources without losing any data stored in the volumes.
+      # docker compose down -v  ---> this with -v flag will remove the volumes created by the docker compose file, which means that any data stored in the volumes will be lost. This can be useful for cleaning up resources and freeing up disk space, but it should be used with caution as it will permanently delete any data stored in the volumes.
+
+
+      # ==================
+      # docker compose down --> stops and removes containers and networks
+      # docker compose up -d  --> starts services in detached mode; remove -d if you want to see the logs in the terminal
+      # docker compose ps  --> shows the status of the running containers
