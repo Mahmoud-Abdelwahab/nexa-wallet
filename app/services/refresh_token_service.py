@@ -12,6 +12,7 @@ from app.core.config import settings
 # hash
 #    ↓
 # session
+# *  Refresh Token one-time use 
 
 import hashlib
 import secrets
@@ -50,7 +51,53 @@ class RefreshTokenService:
 
         return refresh_token, refresh_token_hash, session
 
-    
+
+# business rule that is why this calculate_ttl_seconds is here in this service
+# Refresh session cannot live beyond absolute expiration.
+#  this will be used in token rotation only and this token rotatino will happend only once we call /refresh token endpoint
+
+    def calculate_ttl_seconds(
+        self,
+        absolute_expires_at: datetime,
+    ) -> int:
+        # Example: if idle TTL = 30 days but only 10 days remain until the
+        # absolute expiry, use 10 days: min(30, 10) = 10.
+        # This prevents a refresh session from living past its absolute expiry.
+        now = datetime.now(timezone.utc)
+
+        remaining_seconds = int(
+            (absolute_expires_at - now).total_seconds()
+        )
+
+        idle_seconds = (
+            settings.REFRESH_TOKEN_IDLE_DAYS
+            * 24
+            * 60
+            * 60
+        )
+
+        return min(idle_seconds, remaining_seconds)
+
+    def create_rotated_token(
+        self,
+        session: RefreshSession,
+    ) -> tuple[str, str, RefreshSession]:
+
+        refresh_token = self.generate_refresh_token() #! created new refresh token 
+
+        token_hash = self.hash_refresh_token(
+            refresh_token
+        )
+
+        new_session = RefreshSession(
+            session_id=session.session_id, # same as the old one
+            user_id=session.user_id, # same no change
+            absolute_expires_at=session.absolute_expires_at, # newly calculated based on remaining time from 90 day
+        )
+
+        return refresh_token, token_hash, new_session
+        
+        
     #                 create_refresh_session()
     #                           │
     #          ┌────────────────┼────────────────┐
