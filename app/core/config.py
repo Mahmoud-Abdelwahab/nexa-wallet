@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REFRESH_TOKEN_IDLE_DAYS: int = 30
+    REFRESH_TOKEN_ABSOLUTE_DAYS: int = 90
 
     model_config = SettingsConfigDict(
         env_file=".env",
