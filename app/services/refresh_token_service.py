@@ -39,7 +39,7 @@ class RefreshTokenService:
         now = datetime.now(timezone.utc)
 
         session = RefreshSession(
-            session_id=secrets.token_urlsafe(16),
+            session_id=secrets.token_urlsafe(16), # session_id !=  refresh_token it is just a random id unique for each session usefull when user_id logged in more than one devcie 
             user_id=user_id,
             absolute_expires_at=now + timedelta(
                 days=settings.REFRESH_TOKEN_ABSOLUTE_DAYS
