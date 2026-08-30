@@ -2,7 +2,7 @@ import json
 
 from redis.asyncio import Redis
 from app.core.config import settings
-from app.models.refresh_session import RefreshSession
+from app.schemas.refresh_session import RefreshSession
 
 
 class RefreshTokenStore:
