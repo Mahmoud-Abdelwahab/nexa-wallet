@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -9,7 +9,9 @@ from app.repositories import UserRepository, WalletRepository
 from app.core.security import create_access_token, hash_password, verify_password
 from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenStore
 from app.schemas.authentication import AuthResponse, UserResponse
+from app.schemas.refresh_session import RefreshSession
 from app.services.refresh_token_service import RefreshTokenService
+
 
 # prevent Timing Side-Channel
 # dummy passsword we use to prevent timing attacks when the user does not exist. This ensures that the time taken for the operation is consistent, regardless of whether the user exists or not.
@@ -139,3 +141,74 @@ class AuthService:
             token_type="bearer",
             user=UserMapper.to_response(user),
         )
+
+    async def refresh_access_token(
+        self,
+        refresh_token: str,
+    ) -> AuthResponse:
+
+        old_token_hash = (
+            self.refresh_token_service.hash_refresh_token(
+                refresh_token
+            )
+        )
+
+        session = await self.refresh_token_store.get_session(
+            old_token_hash
+        )
+
+        if session is None:
+            raise ValueError("Invalid refresh token")
+
+        ttl_seconds = (
+            self.refresh_token_service.calculate_ttl_seconds(
+                session.absolute_expires_at
+            )
+        )
+
+        if ttl_seconds <= 0:
+            await self.refresh_token_store.revoke_session(
+                old_token_hash
+            )
+            raise ValueError("Refresh session expired")
+
+        user = self.user_repository.get_by_id(
+            session.user_id
+        )
+
+        if user is None:
+            raise ValueError("User not found")
+    
+        # (
+        #     new_refresh_token,
+        #     new_token_hash,
+        #     new_session,
+        # ) = self.refresh_token_service.create_refresh_session(
+        #     user.id
+        # ).  #! will not use the create_refresh_session used only for logic and register but here need to rotate the refresh token
+        new_refresh_token, new_token_hash, new_session =  self.refresh_token_service.create_rotated_token(session) 
+
+        success = await self.refresh_token_store.rotate_session(
+            old_token_hash=old_token_hash,
+            new_token_hash=new_token_hash,
+            session=new_session,
+            ttl_seconds=ttl_seconds,
+        )
+
+        if not success:
+            raise ValueError("Invalid refresh token")
+
+        access_token = create_access_token(
+            data={
+                "sub": str(user.id),
+                "token_version": user.token_version,
+            }
+        )
+
+        return AuthResponse(
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            token_type="bearer",
+            user=UserMapper.to_response(user),
+        )
+            
