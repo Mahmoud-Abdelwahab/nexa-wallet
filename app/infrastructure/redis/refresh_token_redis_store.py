@@ -46,15 +46,58 @@ class RefreshTokenStore:
             return None
 
         return RefreshSession.model_validate_json(value)
-
+    
     async def revoke_session(
+            self,
+            token_hash: str,
+        ) -> None:
+    
+            key = f"refresh_session:{token_hash}"
+    
+            await self.redis.delete(key)
+    
+    async def rotate_session(
         self,
-        token_hash: str,
-    ) -> None:
+        old_token_hash: str,
+        new_token_hash: str,
+        session: RefreshSession,
+        ttl_seconds: int,
+    ) -> bool:
 
-        key = f"refresh_session:{token_hash}"
+        old_key = f"refresh_session:{old_token_hash}"
+        new_key = f"refresh_session:{new_token_hash}"
 
-        await self.redis.delete(key)
+        result = await self.redis.eval(
+            ROTATE_SESSION_SCRIPT,
+            2,
+            old_key,
+            new_key,
+            session.model_dump_json(),
+            ttl_seconds,
+        )
+
+        return result == 1
+
+
+ROTATE_SESSION_SCRIPT = """
+local old_value = redis.call("GET", KEYS[1])
+
+if not old_value then
+    return 0
+end
+
+redis.call("DEL", KEYS[1])
+
+redis.call(
+    "SET",
+    KEYS[2],
+    ARGV[1],
+    "EX",
+    ARGV[2]
+)
+
+return 1
+"""
 # Redis
 # KEY
 # refresh_session:abc...
