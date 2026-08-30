@@ -7,11 +7,11 @@ from app.schemas.authentication import (
     LoginRequest,
     RegisterRequest,
 )
+from app.schemas.refresh_token_request import RefreshTokenRequest
 from app.services.auth_service import AuthService
 from app.services.refresh_token_service import RefreshTokenService
 from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenStore
 from app.core.redis import redis_client
-
 
 router = APIRouter(
     prefix="/auth",
@@ -76,5 +76,25 @@ async def login(
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post(
+    "/refresh",
+    response_model=AuthResponse,
+)
+async def refresh(
+    request: RefreshTokenRequest,
+    service: AuthService = Depends(get_auth_service),
+):
+    try:
+        return await service.refresh_access_token(
+            request.refresh_token
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
         )
