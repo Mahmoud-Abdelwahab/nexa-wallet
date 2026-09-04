@@ -5,13 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "alembic>=1.15.0",
-    "fastapi>=0.139.0",
-    "passlib[bcrypt]>=1.7.4",
-    "psycopg[binary]>=3.3.4",
-    "pydantic-settings>=2.14.2",
-    "python-jose[cryptography]>=3.5.0",
-    "python-multipart>=0.0.32",
-    "sqlalchemy>=2.0.51",
-    "uvicorn>=0.51.0",
+    "alembic>=1.15.0", # this is for database migration management
+    "bcrypt<4.1", # this is for password hashing and verification
+    "email-validator>=2.3.0", # this is for email validation
+    "fastapi>=0.139.0", # this is for building the API
+    "passlib[bcrypt]>=1.7.4", # this is for password hashing and verification
+    "psycopg[binary]>=3.3.4", # this is for connecting to PostgreSQL database
+    "pydantic-settings>=2.14.2", # this is for managing the application settings and configuration
+    "python-jose[cryptography]>=3.5.0", # this is for JWT token generation and verification
+    "python-multipart>=0.0.32", # this is for handling file uploads in FastAPI
+    "redis>=8.1.0",
+    "sqlalchemy>=2.0.51", # this is for ORM and database management
+    "uvicorn>=0.51.0", # this is for running the FastAPI application
 ]
