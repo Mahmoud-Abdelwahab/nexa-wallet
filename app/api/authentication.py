@@ -11,7 +11,7 @@ from app.schemas.authentication import (
 from app.schemas.refresh_token_request import RefreshTokenRequest
 from app.services.auth_service import AuthService
 from app.services.refresh_token_service import RefreshTokenService
-from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenStore
+from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenRedisStore
 from app.core.redis import redis_client
 from app.models.user import User
 
@@ -27,7 +27,7 @@ def get_auth_service(
 
     refresh_token_service = RefreshTokenService()
 
-    refresh_token_store = RefreshTokenStore(redis_client)
+    refresh_token_store = RefreshTokenRedisStore(redis_client)
 
     return AuthService(
         db=db,
@@ -89,12 +89,10 @@ async def login(
 async def refresh(
     request: RefreshTokenRequest,
     service: AuthService = Depends(get_auth_service),
-    current_user: User = Depends(get_current_user),
 ):
     try:
         return await service.refresh_access_token(
             request.refresh_token,
-            user_id=current_user.id
         )
 
     except ValueError as e:

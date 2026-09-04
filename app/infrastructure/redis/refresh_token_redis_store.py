@@ -5,7 +5,7 @@ from app.core.config import settings
 from app.schemas.refresh_session import RefreshSession
 
 
-class RefreshTokenStore:
+class RefreshTokenRedisStore:
 
     def __init__(self, redis_client: Redis):
         """Initialize the store with the shared async Redis client."""
@@ -66,6 +66,9 @@ class RefreshTokenStore:
         # 2. SADD the token hash to the user's session index.
         # Example: SET refresh_session:AAA + SADD user_refresh_sessions:1 AAA.
 
+        #* used to clean up any stale session hashes from the user's index before storing a new session. This ensures that the user's session index remains accurate and does not contain references to sessions that have already expired or been revoked.
+        await self.cleanup_stale_sessions(session.user_id) 
+
         session_key = f"refresh_session:{token_hash}"
         user_sessions_key = (
             f"user_refresh_sessions:{session.user_id}"
@@ -93,6 +96,30 @@ class RefreshTokenStore:
             )
 
             await pipe.execute()
+
+    async def cleanup_stale_sessions(self, user_id: int) -> None:
+        """Remove hashes whose individual refresh-session keys have expired."""
+
+        user_sessions_key = f"user_refresh_sessions:{user_id}"
+        token_hashes = list(await self.redis.smembers(user_sessions_key))
+
+        if not token_hashes:
+            return
+
+        async with self.redis.pipeline(transaction=True) as pipe:
+            for token_hash in token_hashes:
+                pipe.exists(f"refresh_session:{token_hash}")
+
+            exists_results = await pipe.execute()
+
+        stale_hashes = [
+            token_hash
+            for token_hash, exists in zip(token_hashes, exists_results)
+            if not exists
+        ]
+
+        if stale_hashes:
+            await self.redis.srem(user_sessions_key, *stale_hashes)
 
     async def get_session(
         self,
@@ -135,23 +162,18 @@ class RefreshTokenStore:
             await pipe.execute()
 
     async def revoke_all_sessions(self, user_id: int) -> None:
+        """Atomically revoke every refresh session belonging to a user."""
+
         user_sessions_key = f"user_refresh_sessions:{user_id}"
 
-        # smembers USED TO get all the token hashes for the user's sessions from the set user_refresh_sessions:{user_id} to be able to delete all sessions for the same user
-        # now we get all hashed from the set
-        token_hashes = await self.redis.smembers(user_sessions_key)
-
-        if not token_hashes:
-            return
-
-        async with self.redis.pipeline(transaction=True) as pipe:
-            for token_hash in token_hashes:
-                # create the key for each token hash and delete it from redis
-                pipe.delete(f"refresh_session:{token_hash}")
-
-            pipe.delete(user_sessions_key)
-
-            await pipe.execute()
+        # The Lua script takes the Set snapshot and deletes its session keys
+        # in one atomic operation, so rotation cannot create an orphaned key
+        # between SMEMBERS and DEL.
+        await self.redis.eval(
+            REVOKE_ALL_SESSIONS_SCRIPT,
+            1,
+            user_sessions_key,
+        )
 
     # A exists → DELETE A → CREATE B → SUCCESS
 
@@ -172,15 +194,19 @@ class RefreshTokenStore:
 
         old_key = f"refresh_session:{old_token_hash}"
         new_key = f"refresh_session:{new_token_hash}"
+        user_sessions_key = f"user_refresh_sessions:{session.user_id}"
         # eval(script, numkeys, key1, key2, ..., arg1, arg2, ...)
         result = await self.redis.eval(
             ROTATE_SESSION_SCRIPT,
-            # * this  numkeys --> 2 is the number of keys here we have two keys [ old_key, new_key] after these two you can find the argument values which are model_dump_json and ttl_seconds
-            2,
+            # * numkeys --> 3: old key, new key, and the user's session Set.
+            3,
             old_key,
             new_key,
+            user_sessions_key,
             session.model_dump_json(),
             ttl_seconds,
+            old_token_hash,
+            new_token_hash,
         )
 
         return result == 1
@@ -188,8 +214,11 @@ class RefreshTokenStore:
 
 # KEYS[1]	old_key = refresh_session:{old_token_hash}	المفتاح اللي عايزين نتأكد إنه موجود ونمسحه
 # KEYS[2]	new_key = refresh_session:{new_token_hash}	المفتاح الجديد اللي هننشئه
+# KEYS[3]	user_sessions_key = user_refresh_sessions:{user_id}	Set التي تحتوي hashes جلسات المستخدم
 # ARGV[1]	session.model_dump_json()	القيمة اللي هتتخزن — بيانات السيشن (session_id, user_id, absolute_expires_at)
-# ARGV[2]	ttl_seconds	مدة صلاحية المفتاح الجديد (TTL) considering the last period
+# ARGV[2]	ttl_seconds	مدة صلاحية المفتاح الجديد (TTL) حسب الوقت المتبقي حتى absolute expiry
+# ARGV[3]	old_token_hash	الهاش القديم الذي سيتم حذفه من Set المستخدم
+# ARGV[4]	new_token_hash	الهاش الجديد الذي سيتم إضافته إلى Set المستخدم
 
 # Example of the complete flow:
 #
@@ -215,6 +244,7 @@ if not old_value then
 end
 
 redis.call("DEL", KEYS[1])
+redis.call("SREM", KEYS[3], ARGV[3])
 
 redis.call(
     "SET",
@@ -223,6 +253,7 @@ redis.call(
     "EX",
     ARGV[2]
 )
+redis.call("SADD", KEYS[3], ARGV[4])
 
 return 1
 """
@@ -239,3 +270,17 @@ return 1
 
 # TTL
 # 30 days
+
+# Logout-all is atomic with refresh-token rotation because both operations are
+# Redis Lua scripts executed by Redis one at a time.
+REVOKE_ALL_SESSIONS_SCRIPT = """
+local token_hashes = redis.call("SMEMBERS", KEYS[1])
+
+for _, token_hash in ipairs(token_hashes) do
+    redis.call("DEL", "refresh_session:" .. token_hash)
+end
+
+redis.call("DEL", KEYS[1])
+
+return #token_hashes
+"""

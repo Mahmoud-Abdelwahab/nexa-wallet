@@ -7,7 +7,7 @@ from app.models.user import User
 from app.models.wallet import Wallet
 from app.repositories import UserRepository, WalletRepository
 from app.core.security import create_access_token, hash_password, verify_password
-from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenStore
+from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenRedisStore
 from app.schemas.authentication import AuthResponse, UserResponse
 from app.schemas.refresh_session import RefreshSession
 from app.services.refresh_token_service import RefreshTokenService
@@ -22,7 +22,7 @@ DUMMY_PASSWORD_HASH = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeg6Lruj3vjPGga3
 #     ├── asks RefreshTokenService
 #     │        "create me a session"
 #     │
-#     └── asks RefreshTokenStore
+#     └── asks RefreshTokenRedisStore
 #              "save this session"
 
 
@@ -32,7 +32,7 @@ class AuthService:
         self,
         db: Session,
         refresh_token_service: RefreshTokenService,
-        refresh_token_store: RefreshTokenStore,
+        refresh_token_store: RefreshTokenRedisStore,
     ):
         self.db = db
 
@@ -154,7 +154,6 @@ class AuthService:
     async def refresh_access_token(
         self,
         refresh_token: str,
-        user_id: int,
     ) -> AuthResponse:
 
         # 1. Hash the raw refresh token so the Redis lookup uses the stored key.
@@ -183,7 +182,7 @@ class AuthService:
         if ttl_seconds <= 0:
             await self.refresh_token_store.revoke_session(
                 old_token_hash,
-                user_id=user_id,
+                user_id=session.user_id,
             )
             raise ValueError("Refresh session expired")
 
@@ -252,7 +251,8 @@ class AuthService:
             user.id
         )
 
-        user.token_version += 1  # Increment the token version to invalidate all existing access tokens for this user
+        # Increment the token version to invalidate all existing access tokens for this user
+        user.token_version += 1
         #! why we didn't do this in logout() because we need to logout once device only and this token_vesion related to the user level so if we incremant it all other devices will be logged out and we don't want that in logout() but in logout_all() we want to logout all devices so we increment it here
 
         self.db.commit()
