@@ -11,9 +11,9 @@ A running log of everything built in this project so far. Updated after every ne
 
 ## 🧱 Tech Stack
 
-**Backend:** Python 3.13+, FastAPI, SQLAlchemy 2.x, PostgreSQL, Psycopg 3, Pydantic Settings, python-jose, Passlib (bcrypt), Alembic
+**Backend:** Python 3.13+, FastAPI, SQLAlchemy 2.x, PostgreSQL, Psycopg 3, Redis 7, redis-py asyncio, Pydantic Settings, python-jose, Passlib (bcrypt), Alembic
 **Package/Env Manager:** uv
-**Later:** Docker, Redis, Pytest
+**Local Infrastructure:** Docker Compose (PostgreSQL 16 + Redis 7)
 **Frontend (later):** SwiftUI
 
 ---
@@ -71,6 +71,36 @@ The Router looks up the matching Endpoint; if no route matches, FastAPI returns 
 - **`try/except` only protects the lines physically inside it** — any line before `try:` has no protection at all, even if it looks close in the code. The same applies to code placed *inside* an `except` block after a `raise`: it's unreachable dead code, since `raise` exits immediately.
 - **JWT token invalidation via `token_version`**: JWTs are stateless — a valid signature stays valid until expiry no matter what changes server-side (e.g. a password change). To force old tokens to stop working, the `User` model has a `token_version` counter. It's embedded in the JWT payload at login/register time, and `get_current_user` compares it against the user's *current* `token_version` in the database on every request. `change_password` increments `user.token_version`, which immediately invalidates every previously-issued token for that user — they must log in again to get a new one.
 
+### Refresh Tokens and Redis
+- Refresh tokens are opaque random values. Only their SHA-256 hashes are stored in Redis.
+- `refresh_session:{token_hash}` stores the session JSON with a 30-day idle TTL.
+- `user_refresh_sessions:{user_id}` is a Redis Set containing all refresh-token hashes for that user.
+- Refresh rotation atomically removes the old hash and session, then stores the new session and hash.
+- `logout-all` uses a Lua script and is atomic with rotation, preventing orphaned sessions.
+- The session keeps its `session_id`, `user_id`, and absolute expiry during rotation. TTL is limited by the shorter of idle expiry and remaining absolute lifetime (90 days).
+- The MVP performs opportunistic cleanup of stale hashes when storing a new session.
+
+#### Why Each Refresh-Token Step Exists
+1. **Generate a random opaque token:** the client receives a high-entropy value that does not expose the user id or session data.
+2. **Hash the token with SHA-256:** Redis stores only `H(token)`, so a Redis leak does not directly reveal usable refresh tokens.
+3. **Store the session by hash:** `refresh_session:{token_hash}` gives a direct lookup from the presented token to its session metadata.
+4. **Maintain a per-user Redis Set:** `user_refresh_sessions:{user_id}` makes it possible to find and revoke every device session during logout-all.
+5. **Use `SET` plus `SADD`:** `SET` stores the session JSON and applies the individual idle TTL; `SADD` stores the hash in the user's index. They have different responsibilities.
+6. **Use a transactional pipeline when storing:** the session key and user index are written together, avoiding an incomplete index when both writes succeed or fail as one transaction.
+7. **Hash the incoming refresh token during refresh:** the raw token is never used as a Redis key; only its deterministic hash is looked up.
+8. **Load the old session:** a missing key means the token is invalid, revoked, expired, or already consumed.
+9. **Calculate the remaining TTL:** `min(idle_ttl, remaining_absolute_lifetime)` prevents Redis from keeping a rotated session beyond its 90-day absolute expiry.
+10. **Load the user from `session.user_id`:** the user id comes from trusted session data, not from the request body. We still verify that the user exists before issuing new tokens.
+11. **Create a rotated token with the same session identity:** `session_id`, `user_id`, and `absolute_expires_at` remain stable while the raw refresh token and hash change.
+12. **Rotate with Lua:** the old key is checked and removed, the old hash is removed from the Set, and the new key/hash are created atomically. This makes the old token single-use and prevents concurrent reuse.
+13. **Revoke one device:** delete its session key and remove only its hash from the user Set; other devices remain active.
+14. **Revoke all devices with Lua:** the script reads the current Set, deletes every session key, and deletes the Set in one Redis operation. This prevents rotation from creating an orphaned session between `SMEMBERS` and `DEL`.
+15. **Increment `token_version` on logout-all:** access JWTs are stateless, so the version check invalidates every old access token immediately without changing per-device logout behavior.
+16. **Clean stale hashes opportunistically:** Redis expires individual session keys, but the user Set has no matching TTL. Before a new session is stored, missing session keys are removed from that Set. This is acceptable for the current MVP; a background cleanup job can scale it later.
+
+#### Redis Implementation Naming
+The implementation class is named `RefreshTokenRedisStore` because it is the Redis-specific adapter. The name leaves room for another store implementation later, such as a database-backed store.
+
 ### FastAPI Response Handling
 - **`response_model`**: an actual contract checked at runtime, *after* the business logic has already fully executed (including the DB commit!). It must stay in sync with what the service actually returns, or you get a `ResponseValidationError` (500) **even though the operation already succeeded and was saved to the database**.
 - **`status_code`**: set on the route decorator (`@router.post(..., status_code=...)`), not inside the function body. `200 OK` for a synchronous operation that finished immediately, `201 Created` for creating a new resource, `202 Accepted` for an operation that's accepted but will complete later (async) — this will be used for Transfer later.
@@ -112,11 +142,15 @@ app/
 │   ├── updateUserRequest.py     # UpdateUserRequest (partial update)
 │   └── changePasswordRequest.py # ChangePasswordRequest
 ├── services/
-│   ├── auth_service.py     # register_user, login_user (business logic)
+│   ├── auth_service.py     # register, login, refresh, rotation, logout
+│   ├── refresh_token_service.py # token generation, hashing, TTL, rotation metadata
 │   └── user_service.py     # update_profile, change_password
+├── infrastructure/
+│   └── redis/
+│       └── refresh_token_redis_store.py # Redis storage and atomic scripts
 ├── api/
 │   ├── dependencies.py     # get_current_user (JWT auth dependency)
-│   ├── authentication.py   # POST /auth/register, POST /auth/login
+│   ├── authentication.py   # register, login, refresh, logout, logout-all
 │   ├── users.py             # GET/PATCH /users/me, POST /users/me/change-password (all protected)
 │   └── health.py
 └── main.py                  # FastAPI app + include_router
@@ -206,6 +240,23 @@ Commit
 {"message": "Password changed successfully"}
 ```
 
+### Refresh Token Rotation
+```
+Refresh Token A
+   ↓ hash
+Redis: refresh_session:H(A)
+   ↓ load session and validate absolute expiry
+Generate Refresh Token B
+   ↓ atomic Lua rotation
+Delete H(A) + add H(B)
+   ↓
+New access token + Refresh Token B
+```
+
+The old refresh token is single-use. A second refresh attempt with A returns
+`401 Unauthorized`. Concurrent requests using the same token produce one
+successful rotation and reject the remaining requests.
+
 ---
 
 ## 🐛 Lessons Learned (Worth Remembering)
@@ -226,9 +277,26 @@ Commit
 - Database: local PostgreSQL (Homebrew) + Alembic migrations.
 - Auth: Register, Login, JWT (issue + decode), password hashing, protection against timing attacks and user enumeration.
 - `GET /users/me`, `PATCH /users/me` (partial update), `POST /users/me/change-password` — all JWT-protected via `get_current_user`.
+- Redis refresh-token sessions: storage, 30-day idle TTL, 90-day absolute expiry, rotation, reuse detection, and stale-index cleanup.
+- Per-device logout and logout-all with `token_version` invalidation.
+- Atomic Redis Lua scripts for refresh rotation and logout-all.
+- Real integration verification completed against FastAPI, PostgreSQL, and Redis, including concurrent refresh requests.
 
-**Next:** per the original roadmap — remaining CRUD and Wallet APIs (Balance, Transfer, Transaction Workflow).
+#### Real Integration Verification
+The flow was tested with a live FastAPI server, PostgreSQL, Redis, and real HTTP requests:
+
+1. **Register:** confirmed `201`, access token, refresh token, and default wallet creation.
+2. **Login:** confirmed `200`, Redis session key, user Set membership, 30-day TTL, and approximately 90-day absolute expiry.
+3. **Protected access:** confirmed a valid JWT returns `200` and an invalid JWT returns `401`.
+4. **Refresh and rotation:** confirmed `A -> B`, removal of `H(A)`, insertion of `H(B)`, and preservation of session identity and absolute expiry.
+5. **Reuse detection:** confirmed reusing A returns `401`, while B can rotate successfully to C.
+6. **Current-device logout:** confirmed the selected refresh token returns `401` while other device sessions remain usable.
+7. **Multiple devices:** confirmed logging out device A does not revoke device B.
+8. **Logout-all:** confirmed all refresh tokens and old access tokens return `401`, and `token_version` invalidates the old JWTs.
+9. **Concurrent refresh:** three simultaneous requests using the same token produced exactly one `200` and two `401` responses, proving atomic rotation.
+
+**Next:** add automated pytest coverage for the verified authentication scenarios, then continue with the remaining CRUD and Wallet APIs (Balance, Transfer, Transaction Workflow).
 
 ---
 
-_Last updated: after adding `PATCH /users/me` and `POST /users/me/change-password`, and removing the unique constraint on `username`._
+_Last updated: after verifying Redis refresh-token rotation, atomic logout-all, stale-index cleanup, and real concurrent HTTP flows._
