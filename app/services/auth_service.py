@@ -142,18 +142,19 @@ class AuthService:
             user=UserMapper.to_response(user),
         )
 
-#! 1- take refresh token from request 
-#  2- hash it and get the session related to id from redis 
+#! 1- take refresh token from request
+#  2- hash it and get the session related to id from redis
 #  3- calculate the new absolute_expires_at [ not new ] we calcuate the remaining days from eg 90 day
-#  4- then get user to  create new access token using it's id and create rotated refresh token useing same userid and calcualted absolute_expires_at and new raw refresh token 
-# we ca use the userID from the session that we get from redis but his not better way foe security u need to check if the user still exists or you may need to check if user status = active or not blocked to not generate token from him 
+#  4- then get user to  create new access token using it's id and create rotated refresh token useing same userid and calcualted absolute_expires_at and new raw refresh token
+# we ca use the userID from the session that we get from redis but his not better way foe security u need to check if the user still exists or you may need to check if user status = active or not blocked to not generate token from him
 #  5- create new rotated session with same old idenetiy and new absolute_expires_at and retrun new refersh raw and hashed ans session
-#! 6- importatn step to rotate the token in redis, get old refresh hash then delete it , then add the new one and return the result if success 
-#  7- create normal access token and create the same  AuthResponse and send it to the client with new access token and refresh token also 
+#! 6- importatn step to rotate the token in redis, get old refresh hash then delete it , then add the new one and return the result if success
+#  7- create normal access token and create the same  AuthResponse and send it to the client with new access token and refresh token also
 #  8- refresh Token used once only same as access token
     async def refresh_access_token(
         self,
         refresh_token: str,
+        user_id: int,
     ) -> AuthResponse:
 
         # 1. Hash the raw refresh token so the Redis lookup uses the stored key.
@@ -181,7 +182,8 @@ class AuthService:
 
         if ttl_seconds <= 0:
             await self.refresh_token_store.revoke_session(
-                old_token_hash
+                old_token_hash,
+                user_id=user_id,
             )
             raise ValueError("Refresh session expired")
 
@@ -225,4 +227,32 @@ class AuthService:
             token_type="bearer",
             user=UserMapper.to_response(user),
         )
-            
+
+    async def logout(
+        self,
+        refresh_token: str,
+        user_id: int,
+    ) -> None:
+
+        token_hash = self.refresh_token_service.hash_refresh_token(
+            refresh_token
+        )
+
+        await self.refresh_token_store.revoke_session(
+            token_hash=token_hash,
+            user_id=user_id,
+        )
+
+    async def logout_all(
+        self,
+        user: User,
+    ) -> None:
+
+        await self.refresh_token_store.revoke_all_sessions(
+            user.id
+        )
+
+        user.token_version += 1  # Increment the token version to invalidate all existing access tokens for this user
+        #! why we didn't do this in logout() because we need to logout once device only and this token_vesion related to the user level so if we incremant it all other devices will be logged out and we don't want that in logout() but in logout_all() we want to logout all devices so we increment it here
+
+        self.db.commit()

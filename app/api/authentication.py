@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import get_current_user
 from app.database import get_db
 from app.schemas.authentication import (
     AuthResponse,
@@ -12,6 +13,7 @@ from app.services.auth_service import AuthService
 from app.services.refresh_token_service import RefreshTokenService
 from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenStore
 from app.core.redis import redis_client
+from app.models.user import User
 
 router = APIRouter(
     prefix="/auth",
@@ -87,10 +89,12 @@ async def login(
 async def refresh(
     request: RefreshTokenRequest,
     service: AuthService = Depends(get_auth_service),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         return await service.refresh_access_token(
-            request.refresh_token
+            request.refresh_token,
+            user_id=current_user.id
         )
 
     except ValueError as e:
@@ -98,3 +102,29 @@ async def refresh(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
         )
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def logout(
+    request: RefreshTokenRequest,
+    current_user: User = Depends(get_current_user),
+    service: AuthService = Depends(get_auth_service),
+):
+    await service.logout(
+        refresh_token=request.refresh_token,
+        user_id=current_user.id,
+    )
+
+
+@router.post(
+    "/logout-all",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def logout_all(
+    current_user: User = Depends(get_current_user),
+    service: AuthService = Depends(get_auth_service),
+):
+    await service.logout_all(current_user)

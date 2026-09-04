@@ -16,6 +16,26 @@ class RefreshTokenStore:
 # user_refresh_sessions:{user_id}
 # to get all session easly for the same user to log him out from all devices -Logout All Devices
 
+# Redis structure:
+#
+#                         User 1
+#                           |
+#             user_refresh_sessions:1  (SET)
+#                           |
+#                     {AAA, BBB}
+#                       /     \
+#                      /       \
+#                     v         v
+#     refresh_session:AAA    refresh_session:BBB
+#          (KEY -> VALUE)         (KEY -> VALUE)
+#          AAA -> Session         BBB -> Session
+#
+# Each refresh session has its own key:
+#   refresh_session:{token_hash} -> session data
+#
+# Each user also has one Set containing the hashes of all their sessions:
+#   user_refresh_sessions:{user_id} -> {token_hash_1, token_hash_2, ...}
+
 # Redis data model:
 #
 # 1) SET stores the complete session data:
@@ -48,30 +68,31 @@ class RefreshTokenStore:
 
         session_key = f"refresh_session:{token_hash}"
         user_sessions_key = (
-                f"user_refresh_sessions:{session.user_id}"
-            )
+            f"user_refresh_sessions:{session.user_id}"
+        )
 
         ttl_seconds = (
-                settings.REFRESH_TOKEN_IDLE_DAYS
-                * 24
-                * 60
-                * 60
-            )
+            settings.REFRESH_TOKEN_IDLE_DAYS
+            * 24
+            * 60
+            * 60
+        )
 
         value = session.model_dump_json()
 
         async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.set(
-                    session_key,
-                    value,
-                    ex=ttl_seconds,
-                )
-                pipe.sadd(
-                    user_sessions_key,
-                    token_hash,
-                )
+            pipe.set(  # set USED TO store the session data in Redis with a TTL (time-to-live) that represents the idle expiration time for the refresh token. This means that if the refresh token is not used within this time frame, it will automatically expire and be removed from Redis.
+                session_key,
+                value,
+                ex=ttl_seconds,
+            )
+            pipe.sadd(  # sadd USED TO add the token hash to the user's session index in a set to be able to get all sessions for the same user to log him out from all devices
+                # user_refresh_sessions:{user_id} ==> {AAA, BBB} AAA is the token hash for the session
+                user_sessions_key,
+                token_hash,
+            )
 
-                await pipe.execute()
+            await pipe.execute()
 
     async def get_session(
         self,
@@ -106,14 +127,34 @@ class RefreshTokenStore:
 
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete(session_key)
-            pipe.srem(
+            pipe.srem(  # srem USED TO remove the token hash from the user's session index in a set
                 user_sessions_key,
                 token_hash,
             )
 
             await pipe.execute()
 
+    async def revoke_all_sessions(self, user_id: int) -> None:
+        user_sessions_key = f"user_refresh_sessions:{user_id}"
+
+        # smembers USED TO get all the token hashes for the user's sessions from the set user_refresh_sessions:{user_id} to be able to delete all sessions for the same user
+        # now we get all hashed from the set
+        token_hashes = await self.redis.smembers(user_sessions_key)
+
+        if not token_hashes:
+            return
+
+        async with self.redis.pipeline(transaction=True) as pipe:
+            for token_hash in token_hashes:
+                # create the key for each token hash and delete it from redis
+                pipe.delete(f"refresh_session:{token_hash}")
+
+            pipe.delete(user_sessions_key)
+
+            await pipe.execute()
+
     # A exists → DELETE A → CREATE B → SUCCESS
+
     async def rotate_session(
         self,
         old_token_hash: str,
