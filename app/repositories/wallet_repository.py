@@ -31,3 +31,26 @@ class WalletRepository:
         )
 
         return self.db.scalar(stmt)
+
+    from sqlalchemy import select
+
+
+    def get_by_user_id(self, user_id: int) -> list[Wallet]:
+        stmt = select(Wallet).where(
+            Wallet.user_id == user_id
+        )
+
+        return list(self.db.scalars(stmt).all())
+
+
+    def get_by_id_and_user(
+        self,
+        wallet_id: int,
+        user_id: int,
+    ) -> Wallet | None:
+        stmt = select(Wallet).where(
+            Wallet.id == wallet_id,
+            Wallet.user_id == user_id,  #! important for security, we need to make sure that the wallet belongs to the user, otherwise the user can access other user's wallets
+        )
+
+        return self.db.scalar(stmt)

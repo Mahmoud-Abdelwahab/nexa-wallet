@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.api.dependencies import get_current_user
+from app.api.routes.dependencies import get_current_user
 from app.mappers.user_mapper import UserMapper
 from app.models.user import User
 from app.schemas.authentication import UserResponse
