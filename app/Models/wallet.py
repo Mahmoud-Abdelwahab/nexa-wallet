@@ -19,7 +19,7 @@ class Wallet(Base):
     __tablename__ = "wallets"
 
     __table_args__ = (
-        UniqueConstraint(
+        UniqueConstraint( #*→ User has only one wallet per currency ✅
             "user_id",
             "currency",
             name="uq_wallet_user_currency",
