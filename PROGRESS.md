@@ -2,6 +2,10 @@
 
 A running log of everything built in this project so far. Updated after every new step.
 
+Last reviewed: **2026-10-25 (Asia/Dubai)** against the current source, Git history through `e4885d8`, and local notes in `terminal.md`.
+
+Learning reference: [Business and Design Guide](BUSINESS_GUIDE.md) explains the business rules, table relationships, implementation decisions, and current limitations in English.
+
 ---
 
 ## 🎯 Project Goal
@@ -20,10 +24,12 @@ A running log of everything built in this project so far. Updated after every ne
 
 ## 🏗️ Core Architecture Decisions
 
+Transaction execution, gateway integration, and row-locking below are design decisions for future implementation; the current code contains the domain models and wallet creation/read APIs.
+
 - **Transaction Flow:** `Pending → Bank/Payment Gateway → Success or Failed`. Balance is never debited/credited until the operation succeeds.
 - **Ledger:** the final source of truth for balances. The `Transaction` table represents the workflow; `LedgerEntry` represents the actual financial truth (Debit/Credit).
-- **Currency:** every monetary record (Transaction, LedgerEntry, Wallet) carries `amount` + `currency` to support multi-currency later.
-- **Transaction Type:** `Transfer`, `TopUp`, `Withdraw` (LedgerEntryType additionally has `FEE`, `TAX`, `CASHBACK`).
+- **Currency:** transactions and ledger entries carry `amount` + `currency`; wallets carry `balance` + `currency`. Supported currencies are currently AED, USD, and EUR.
+- **Operation types:** `TRANSFER`, `TOP_UP`, `WITHDRAW` are represented in `LedgerEntryType`, alongside `FEE`, `TAX`, and `CASHBACK`. The current `Transaction` model does not yet have a transaction-type column.
 - **Locking:** row locks are used while executing a transfer, but released before waiting on the bank's response — the lock is released right after the Pending transaction is created.
 - **Wallet uniqueness:** `UniqueConstraint(user_id, currency)` — a user can have multiple wallets, but only one per currency.
 - **User identity fields:** `email` and `mobile` are unique identifiers. `username` is intentionally **not** unique — it's just a display name, not used to look up or identify a user.
@@ -123,6 +129,7 @@ The implementation class is named `RefreshTokenRedisStore` because it is the Red
 ```
 app/
 ├── core/
+│   ├── redis.py          # Shared async Redis client (closed during app shutdown)
 │   ├── config.py         # Settings (pydantic-settings, reads .env)
 │   ├── enums.py           # Currency, WalletStatus, TransactionStatus
 │   └── security.py        # hash_password, verify_password, create/decode_access_token
@@ -134,28 +141,40 @@ app/
 │   └── ledger_entry.py     # LedgerEntry (direction, entry_type, amount > 0 check)
 ├── repositories/
 │   ├── user_repository.py  # get_by_username/email/mobile/id, create
-│   └── wallet_repository.py
+│   └── wallet_repository.py # create, get_by_id, get_by_user_and_currency, get_by_user_id, get_by_id_and_user
 ├── mappers/
 │   └── user_mapper.py      # User (ORM) → UserResponse (schema)
 ├── schemas/
 │   ├── authentication.py   # RegisterRequest, LoginRequest, UserResponse, AuthResponse
+│   ├── wallet.py           # CreateWalletRequest, WalletResponse (ORM attributes)
+│   ├── refresh_session.py  # RefreshSession metadata
+│   ├── refresh_token_request.py # RefreshTokenRequest
 │   ├── updateUserRequest.py     # UpdateUserRequest (partial update)
 │   └── changePasswordRequest.py # ChangePasswordRequest
 ├── services/
 │   ├── auth_service.py     # register, login, refresh, rotation, logout
 │   ├── refresh_token_service.py # token generation, hashing, TTL, rotation metadata
+│   ├── wallet_service.py   # create_wallet, get_user_wallets, get_wallet
 │   └── user_service.py     # update_profile, change_password
 ├── infrastructure/
 │   └── redis/
 │       └── refresh_token_redis_store.py # Redis storage and atomic scripts
 ├── api/
-│   ├── dependencies.py     # get_current_user (JWT auth dependency)
-│   ├── authentication.py   # register, login, refresh, logout, logout-all
-│   ├── users.py             # GET/PATCH /users/me, POST /users/me/change-password (all protected)
-│   └── health.py
-└── main.py                  # FastAPI app + include_router
+│   └── routes/
+│       ├── dependencies.py # get_current_user (JWT + token_version validation)
+│       ├── authentication.py # register, login, refresh, logout, logout-all
+│       ├── users.py        # Protected profile and password endpoints
+│       ├── wallet.py       # Protected wallet creation, list, and detail endpoints
+│       └── health.py       # GET /health
+└── main.py                 # FastAPI app, all routers, Redis shutdown lifespan
 
-alembic/                     # DB migrations
+alembic/versions/
+├── 4e3d3341cd6d_create_initial_schema.py
+├── 55408d5ad25a_allow_duplicate_usernames.py
+└── 27354e4584e1_add_token_version_to_users.py
+
+compose.yaml                # PostgreSQL 16 (host 5433) + Redis 7 (host 6379)
+terminal.md                 # Local command reference and wallet business-rule notes
 ```
 
 ---
@@ -170,7 +189,7 @@ User + Wallet
    ↓
 Commit
    ↓
-JWT
+Access JWT + Redis refresh session
 ```
 Details: check for duplicates (mobile, email) → hash the password → create the User → `flush()` (to get the generated id) → create a default AED wallet → `commit()` both together → on any failure, `rollback()` everything → the token is generated only **after** a successful commit.
 
@@ -180,11 +199,11 @@ LOGIN
    ↓
 Verify password
    ↓
-JWT
+Access JWT + Redis refresh session
    ↓
 Client
 ```
-Details: normalize the email (`lower()`) → look it up → verify the password (with timing side-channel protection if the user doesn't exist) → issue a JWT.
+Details: normalize the email (`lower()`) → look it up → verify the password (with timing side-channel protection if the user doesn't exist) → issue an access JWT and store a refresh session in Redis → return both tokens with user data.
 
 ### Protected Request
 ```
@@ -233,12 +252,20 @@ new_password == confirm_password?
    ↓
 new_password != current_password?
    ↓
-hash_password(new_password)
+hash_password(new_password) + increment token_version
    ↓
 Commit
    ↓
 {"message": "Password changed successfully"}
 ```
+
+### Wallet Creation and Reads
+
+- `POST /wallets`: accepts `CreateWalletRequest` with `currency` (`AED`, `USD`, or `EUR`). The owner comes from `get_current_user`, rather than the request body. The service checks for an existing wallet for that user/currency, creates and commits the wallet, and returns `201` with `id`, `currency`, `balance`, and `status`. Model defaults set balance to zero and status to `ACTIVE`. A detected duplicate returns `409`.
+- `GET /wallets`: returns `200` with the authenticated user's wallets, filtered by `user_id`.
+- `GET /wallets/{wallet_id}`: queries by both wallet id and authenticated user id. Returns `200` for an owned wallet; missing wallets and wallets owned by another user both return `404` with `Wallet not found`, avoiding disclosure of another user's wallet.
+- All three routes require JWT authentication. `WalletResponse` uses Pydantic `from_attributes=True` to serialize ORM objects, including the Decimal balance.
+- Repositories perform database operations; the service owns business checks and commits; the router maps service `ValueError`s to HTTP responses.
 
 ### Refresh Token Rotation
 ```
@@ -273,8 +300,12 @@ successful rotation and reject the remaining requests.
 ## ✅ Current Status
 
 **Done:**
+
 - Models: User, Wallet, Transaction, LedgerEntry + their relationships.
-- Database: local PostgreSQL (Homebrew) + Alembic migrations.
+- Wallet APIs: authenticated creation, listing, and detail lookup; user ownership filtering; duplicate-currency precheck and database uniqueness constraint.
+- Wallet schemas, service, and repository queries; routes reorganized under `app/api/routes/` and registered in `app/main.py`.
+- Redis client cleanup on application shutdown through FastAPI lifespan.
+- Database: PostgreSQL + Alembic migrations; current local infrastructure uses Docker Compose (PostgreSQL 16 on host port 5433 and Redis 7 on 6379), with a named PostgreSQL volume.
 - Auth: Register, Login, JWT (issue + decode), password hashing, protection against timing attacks and user enumeration.
 - `GET /users/me`, `PATCH /users/me` (partial update), `POST /users/me/change-password` — all JWT-protected via `get_current_user`.
 - Redis refresh-token sessions: storage, 30-day idle TTL, 90-day absolute expiry, rotation, reuse detection, and stale-index cleanup.
@@ -295,8 +326,48 @@ The flow was tested with a live FastAPI server, PostgreSQL, Redis, and real HTTP
 8. **Logout-all:** confirmed all refresh tokens and old access tokens return `401`, and `token_version` invalidates the old JWTs.
 9. **Concurrent refresh:** three simultaneous requests using the same token produced exactly one `200` and two `401` responses, proving atomic rotation.
 
-**Next:** add automated pytest coverage for the verified authentication scenarios, then continue with the remaining CRUD and Wallet APIs (Balance, Transfer, Transaction Workflow).
+#### Wallet Rules and Remaining Work
+
+The wallet notes in `terminal.md` specify user ownership, currency as a wallet attribute, one wallet per currency per user, non-negative balances, and balance changes only through transaction/ledger operations.
+
+- Ownership and currency uniqueness are implemented. The API currently exposes creation and reads, including the stored balance; there is no direct balance-update endpoint.
+- The non-negative balance rule remains a design requirement: the current wallet model and initial migration do not define a `balance >= 0` database check.
+- Duplicate creation is checked before insertion, and the database enforces uniqueness. Concurrent duplicate requests still need explicit `IntegrityError` handling and rollback to consistently return `409`.
+- Transaction and ledger models exist, but transfer/top-up/withdraw execution, ledger posting, gateway integration, and locking are not yet implemented.
+
+**Verification scope:** the authentication integration results above are preserved from the earlier progress log. This review checked source and history only; it did not rerun those live scenarios. No automated test suite is currently present, and wallet HTTP integration verification has not been recorded.
+
+**Next:**
+
+1. Add automated pytest coverage for authentication and wallet creation/list/detail, including unauthorized access, cross-user ownership, duplicate currencies, and concurrent creation.
+2. Handle wallet uniqueness errors with rollback and a consistent conflict response; enforce the non-negative balance requirement.
+3. Implement the transaction/ledger workflow and balance changes, including transfer, top-up, withdrawal, and concurrency rules.
+
+#### Recent Milestones
+
+- **2026-09-05:** authentication progress documented, including Redis rotation, logout-all, stale-index cleanup, and recorded real HTTP verification.
+- **2026-09-06 — `a4615e4`:** wallet repository lookups by id and user/currency; wallet business-rule notes.
+- **2026-09-06 — `e4885d8`:** wallet creation/list/detail APIs, schemas and service; ownership queries; routes moved into `app/api/routes/`.
+- **2026-10-25 review:** incorporated those wallet changes and the current local Docker command notes. `terminal.md` contains uncommitted command-reference edits at review time.
+- **2026-10-25 documentation:** added `BUSINESS_GUIDE.md`, an English learning reference covering entities and relationships, account/session/wallet flows, ledger examples, architecture rationale, and implemented versus planned rules; linked it from the README.
+- **2026-10-25 transfer design notes:** expanded the guide with an AED 100 transfer, its debit/credit entries, the shared database transaction and rollback requirement, and model review followed by a planned `TransferService` as the next transfer implementation step.
+- **2026-10-25 agreed transfer requirements:** documented the first eight internal-transfer rules in the guide, with a validation flowchart: positive amount, sender ownership, different wallets, matching currencies, both wallets ACTIVE, sufficient sender balance, and exactly one Transaction plus one debit and one credit per successful transfer. Implementation remains pending.
+- **2026-10-25 agreed transfer flow:** added a diagram for the planned `POST /transfers` → current user → `TransferService` → validation → uncommitted PENDING transaction → debit/credit entries → balance updates → SUCCESS → one final commit. Clarified flush versus commit, rollback, and the separate future external-gateway workflow.
+- **2026-10-25 visual learning reference:** added Mermaid diagrams throughout `BUSINESS_GUIDE.md` for ownership and table relationships, registration, authorization, profile/password updates, session expiry and rotation, logout, wallet creation, the AED 100 transfer, atomic commit/rollback, planned gateway outcomes, and application layers.
+
+#### Local Development Reference
+
+```bash
+docker compose up -d       # Start PostgreSQL and Redis
+alembic upgrade head       # Apply database migrations
+uvicorn app.main:app --reload
+docker compose ps          # Inspect service status
+docker compose logs -f     # Follow service logs
+docker compose down        # Stop/remove containers; retain PostgreSQL volume
+```
+
+`terminal.md` also records general Docker commands for inspecting containers, images, logs, and volumes, and stopping/starting/removing containers or pruning unused resources. Redis currently has no persistent volume configured in Compose.
 
 ---
 
-_Last updated: after verifying Redis refresh-token rotation, atomic logout-all, stale-index cleanup, and real concurrent HTTP flows._
+_Last updated: 2026-10-25 — reconciled with current wallet APIs, route structure, migrations, local infrastructure notes, and remaining implementation/verification work._

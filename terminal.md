@@ -1,12 +1,21 @@
-docker compose up -d.  =====>  to start runing the containsers we have two now postgress and redis
-uvicorn app.main:app --reload.  ====> to run the server 
+docker compose up -d  =====>  to start runing the containsers we have two now postgress and redis
+uvicorn app.main:app --reload  ====> to run the server 
 
 
 
+docker compose up -d      # شغّل
+docker compose down       # قفل واحذف الكونتينرات (الـ volume بيفضل)
+docker compose logs -f    # شوف اللوجز لايف
 
-
-
-
+docker ps                    # الكونتينرات الشغالة
+docker ps -a                 # كل الكونتينرات حتى الواقفة
+docker images                # الصور المحمّلة عندك
+docker logs -f my-redis      # اللوجز
+docker stop my-redis         # وقّف
+docker start my-redis        # شغّل تاني
+docker rm my-redis           # امسح (لازم يكون واقف الأول)
+docker volume ls             # الفوليومز
+docker system prune          # نضّف الحاجات غير المستخدمة
 
 
 

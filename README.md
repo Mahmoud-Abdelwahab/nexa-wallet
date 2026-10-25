@@ -2,6 +2,8 @@
 
 A digital wallet API built with FastAPI, SQLAlchemy, PostgreSQL, and Redis.
 
+For the business rules, table relationships, workflow examples, and reasons behind the design, read [Business and Design Guide](BUSINESS_GUIDE.md). For completed work and next steps, read [Progress Log](PROGRESS.md).
+
 ## Features
 
 - User registration and login with JWT access tokens
