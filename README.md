@@ -2,6 +2,10 @@
 
 A digital wallet API built with FastAPI, SQLAlchemy, PostgreSQL, and Redis.
 
+For the business rules, table relationships, workflow examples, and reasons behind the design, read [Business and Design Guide](BUSINESS_GUIDE.md). For completed work and next steps, read [Progress Log](PROGRESS.md).
+
+For automatic Codex PR reviews, see [setup and behavior](.github/codex/README.md). Activation requires the `OPENAI_API_KEY` GitHub Actions secret.
+
 ## Features
 
 - User registration and login with JWT access tokens
