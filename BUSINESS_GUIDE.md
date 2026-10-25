@@ -656,6 +656,62 @@ The following partial outcomes must never be committed:
 
 If a pending transaction was committed earlier, rollback of the final posting does not erase that earlier record. It must leave no partially committed success posting; failure/retry handling for the pending record needs its own policy.
 
+### Lock ordering: why sort wallet ids before FOR UPDATE?
+
+The repository's `get_wallets_for_update(wallet_ids)` now selects the matching wallets with `.order_by(Wallet.id).with_for_update()`. This is a building block for the planned transfer service; the service must keep validation and posting in the same database transaction.
+
+Without consistent ordering, opposite-direction transfers can each hold the row the other needs:
+
+```mermaid
+flowchart LR
+    T1["Transfer 1 holds wallet 10"] -->|waits for wallet 20 held by| T2["Transfer 2 holds wallet 20"]
+    T2 -->|waits for wallet 10 held by| T1
+    style T1 fill:#fee2e2,stroke:#b91c1c,color:#111827
+    style T2 fill:#fee2e2,stroke:#b91c1c,color:#111827
+```
+
+That cycle is a deadlock. Sorting by the stable wallet id makes both transfers request rows in the same order, regardless of which wallet is the sender:
+
+```mermaid
+sequenceDiagram
+    participant T1 as Transfer 1: 10 to 20
+    participant W10 as Wallet 10
+    participant W20 as Wallet 20
+    participant T2 as Transfer 2: 20 to 10
+    T1->>W10: Acquire row lock
+    T2->>W10: Request row lock; wait here
+    Note over T2,W20: Transfer 2 has not locked wallet 20
+    T1->>W20: Acquire row lock
+    Note over T1: Validate and post within the transaction
+    T1->>W10: Commit releases lock
+    T1->>W20: Same commit releases lock
+    W10-->>T2: Waiting lock can now be acquired
+    T2->>W20: Acquire row lock
+    Note over T2: Validate against current balances, then post
+```
+
+The diagram illustrates a case where Transfer 1 acquires wallet 10 first; either transfer can win. All transfer paths must follow the same ascending-id lock protocol. This reduces deadlock risk for these wallet rows, but does not guarantee the entire application is deadlock-free: other rows, tables, or differently ordered queries can still introduce cycles. The locks last until commit or rollback, not just until the repository method returns.
+
+### Why does the locking query return a list?
+
+The query matches a set of wallet ids, so it can return several Wallet objects:
+
+```text
+wallet_ids = [20, 10]
+    ↓ WHERE id IN (...) + ORDER BY id + FOR UPDATE
+matching locked rows: Wallet 10, Wallet 20
+    ↓ db.scalars(stmt).all()
+collection of Wallet ORM objects
+    ↓ list(...)
+list[Wallet], ordered as [Wallet 10, Wallet 20]
+```
+
+`scalars()` exposes the Wallet objects for all result rows. `scalar()` would return only the first result and would not provide both wallets to the service. `.all()` collects the results; wrapping them in `list()` makes the return type explicit. It does not create detached copies, and returning the list does not release row locks.
+
+**Never assume `wallets[0]` is the sender.** Results are sorted by id, not by the request's roles or input order. The future service should find the sender and receiver by their ids, for example through a dictionary keyed by `wallet.id`, then validate ownership and the other rules.
+
+Missing wallet ids are omitted, so a two-wallet request may return fewer than two rows. Repeating an id does not return the same row twice. The caller must check existence and distinct ids explicitly; the list alone does not prove that a valid transfer can proceed.
+
 ### Next implementation step
 
 Review the current `Transaction` and `LedgerEntry` models against these rules, then build a `TransferService` for the first real internal transfer between two wallets. The service should coordinate validation, concurrency protection, the two entries, balance updates, and one commit/rollback boundary. A failure-path test should prove that an interrupted posting leaves no partial money movement. This is planned work, not an existing service.
