@@ -151,7 +151,7 @@ Source: [transaction.py](app/models/transaction.py).
 | Field | Purpose and rule |
 | --- | --- |
 | `id` | Internal transaction identity |
-| `reference` | Unique operation reference; generation and external usage are not implemented yet |
+| `reference` | Unique operation reference; internal transfers generate `TXN-` followed by a full UUID hex value, while external usage is not defined yet |
 | `sender_wallet_id`, `receiver_wallet_id` | The wallets participating in the two roles |
 | `amount`, `currency` | The requested monetary value and unit |
 | `status` | `PENDING` by default; enum also includes `SUCCESS`, `FAILED`, `CANCELLED` |
@@ -180,7 +180,7 @@ The database enforces `amount > 0`. Direction expresses whether money leaves or 
 
 In this project's wallet convention, **debit decreases the wallet balance** and **credit increases it**. Full accounting systems classify accounts more precisely; this wallet model is not yet a complete accounting system.
 
-The intended design treats the ledger as financial truth and the wallet balance as a stored value that must agree with it. No current code computes that agreement or posts entries. Append-only entries and correcting mistakes through compensating entries are useful future rules, but immutability is not currently enforced.
+The intended design treats the ledger as financial truth and the wallet balance as a stored value that must agree with it. The transfer service now posts paired entries and updates balances together; no reconciliation job independently checks their agreement. Append-only entries and correcting mistakes through compensating entries are useful future rules, but immutability is not currently enforced.
 
 ## 5. Account and authentication business flows
 
@@ -425,11 +425,59 @@ For an unknown wallet and another user's wallet, the detail endpoint returns the
 
 `WalletResponse` returns `id`, `currency`, `balance`, and `status`. Pydantic's `from_attributes=True` lets it read these values from the ORM object.
 
-## 8. Planned money movement: an example and its open decisions
+## 8. Internal transfers: service flow, examples, and open decisions
+
+### TransferService.transfer(): implementation and flowchart
+
+Source: [transfer_service.py](app/services/transfer_service.py). The service now implements the first fee-free internal-transfer flow. A `POST /transfers` route is still pending; this service accepts `user_id` from its caller, so the future route must obtain it from `current_user`.
+
+```mermaid
+flowchart TD
+    START["TransferService.transfer()"] --> A["1. Validate amount greater than zero"]
+    A --> D["2. Reject identical sender and receiver ids"]
+    D --> LOCK["3. Lock sender and receiver: ORDER BY id FOR UPDATE"]
+    subgraph DB["Same database transaction: hold locks through posting"]
+        LOCK --> E["4. Check both wallets exist; map them by id"]
+        E --> O["5. Validate sender ownership"]
+        O --> S["6. Validate both wallets are ACTIVE"]
+        S --> C["7. Validate same currency"]
+        C --> B["8. Validate sufficient sender balance"]
+        B --> T["9. Create Transaction: PENDING; flush for id"]
+        T --> DEBIT["10. Create sender DEBIT ledger: type TRANSFER"]
+        DEBIT --> CREDIT["11. Create receiver CREDIT ledger: type TRANSFER"]
+        CREDIT --> BAL["12. Subtract sender balance; add receiver balance"]
+        BAL --> SUCCESS["13. Transaction status = SUCCESS"]
+        SUCCESS --> COMMIT["14. COMMIT once"]
+    end
+    COMMIT --> RETURN["Return successful Transaction"]
+    LOCK -. "Any validation or posting exception in the protected block" .-> RB["ROLLBACK; re-raise error"]
+    RB --> UNDO["No new Transaction or entries; no partial balance changes"]
+    A -. "Invalid amount" .-> REJECT["Reject before locking or posting"]
+    D -. "Same wallet" .-> REJECT
+    style COMMIT fill:#dcfce7,stroke:#15803d,color:#111827
+    style RB fill:#fee2e2,stroke:#b91c1c,color:#111827
+```
+
+The failure arrow represents exceptions throughout the service's `try` block, not just lock acquisition. A rollback releases the locks and undoes the database transaction's uncommitted changes. `flush()` obtains the transaction id without an intermediate commit.
+
+**Ledger names have different jobs:**
+
+| Attribute | Enum | Values used for a transfer |
+| --- | --- | --- |
+| `direction` | `LedgerDirection` | Sender `DEBIT`; receiver `CREDIT` |
+| `entry_type` | `LedgerEntryType` | `TRANSFER` for both entries |
+
+`LedgerEntryType.DEBIT` and `LedgerEntryType.CREDIT` do not exist. The operation type stays `TRANSFER`; direction tells us which wallet loses or receives money. Both entries also carry the shared currency and link to the generated transaction id.
+
+The service generates a reference using `f"TXN-{uuid4().hex}"`, for example `TXN-7e2ba84f5c164b37a09d638f12c450be`. The prefix makes the reference recognizable as a transaction, while retaining all 32 UUID hex characters. The database's unique constraint enforces uniqueness. The complete reference is 36 characters, so the existing `String(50)` column needs no schema change or migration. Existing references are not rewritten. A future schema change, such as changing a column's length or constraints, requires an Alembic migration.
+
+The service also supplies the transaction currency and maps the optional `message` argument to the existing `gateway_message` field. A distinct user-note field has not been introduced.
+
+**Verification:** local in-memory SQLite checks covered a successful AED 100 transfer, exactly two linked entries with correct directions/types/currency, each business validation, and rollback after flushing a simulated failed posting. These were one-off checks, not a committed automated test suite. They do not verify PostgreSQL row locks or concurrent transfers, and no transfer HTTP endpoint has been tested. Amount precision/rounding and idempotency still need work before treating the service as complete.
 
 ### First internal-transfer business rules — agreed before coding
 
-These rules define the first simple internal transfer, without fees or currency conversion. They are requirements for the planned `TransferService`, not validations already implemented in the application.
+These rules define the first simple internal transfer, without fees or currency conversion. They are implemented in the current `TransferService`; see the service flow and verification limits above.
 
 | # | Required rule | Why it matters |
 | --- | --- | --- |
@@ -477,7 +525,7 @@ This diagram explains the business decisions; it does not prescribe separate unl
 
 ### Agreed first-transfer flow: one commit at the end
 
-The planned `POST /transfers` endpoint will authenticate the caller and delegate the operation to `TransferService`. This first internal-transfer flow does not wait for an external gateway. The endpoint and service are not implemented yet.
+The planned `POST /transfers` endpoint will authenticate the caller and delegate the operation to `TransferService`. This first internal-transfer flow does not wait for an external gateway. The service is implemented; the endpoint is not implemented yet.
 
 ```mermaid
 flowchart TD
@@ -536,7 +584,7 @@ flowchart TD
 
 One transaction explains both entries. Each entry changes one wallet; the fee-free internal transfer conserves the total AED amount.
 
-Suppose Alice owns Wallet A with AED 150, and Bob owns Wallet B with AED 20. Alice requests an AED 100 internal transfer without fees. The following records illustrate the intended committed result; transfer execution is not implemented yet. `T1`, `L1`, `L2`, `A`, and `B` are readable labels standing in for actual database ids.
+Suppose Alice owns Wallet A with AED 150, and Bob owns Wallet B with AED 20. Alice requests an AED 100 internal transfer without fees. The following records illustrate the result of a successful service call; HTTP integration is still pending. `T1`, `L1`, `L2`, `A`, and `B` are readable labels standing in for actual database ids.
 
 ```text
 Transaction T1
@@ -594,7 +642,7 @@ The intended successful result is:
 
 The pair conserves AED value in this simplified internal transfer. Future fees need explicit additional accounting; they must not be unexplained differences between balances.
 
-The first eight transfer rules are defined above and still need implementation. Idempotency and permitted status transitions also need explicit design before retries and workflow transitions are supported.
+The first eight transfer rules are defined above and implemented in the service. Idempotency and permitted status transitions also need explicit design before retries and workflow transitions are supported.
 
 ### Required rule: commit the entire transfer together
 
@@ -658,7 +706,7 @@ If a pending transaction was committed earlier, rollback of the final posting do
 
 ### Lock ordering: why sort wallet ids before FOR UPDATE?
 
-The repository's `get_wallets_for_update(wallet_ids)` now selects the matching wallets with `.order_by(Wallet.id).with_for_update()`. This is a building block for the planned transfer service; the service must keep validation and posting in the same database transaction.
+The repository's `get_wallets_for_update(wallet_ids)` now selects the matching wallets with `.order_by(Wallet.id).with_for_update()`. The transfer service uses this query and keeps validation and posting in the same database transaction.
 
 Without consistent ordering, opposite-direction transfers can each hold the row the other needs:
 
@@ -714,7 +762,7 @@ Missing wallet ids are omitted, so a two-wallet request may return fewer than tw
 
 ### Next implementation step
 
-Review the current `Transaction` and `LedgerEntry` models against these rules, then build a `TransferService` for the first real internal transfer between two wallets. The service should coordinate validation, concurrency protection, the two entries, balance updates, and one commit/rollback boundary. A failure-path test should prove that an interrupted posting leaves no partial money movement. This is planned work, not an existing service.
+Expose the service through an authenticated transfer endpoint, define request/response schemas and amount precision, and add repeatable PostgreSQL tests for posting, rollback, and concurrent opposite-direction transfers. Add idempotency before supporting retries. The current service is a first implementation, not a fully verified transfer API.
 
 ### Why pending is different from success
 
