@@ -345,6 +345,7 @@ The wallet notes in `terminal.md` specify user ownership, currency as a wallet a
 
 #### Recent Milestones
 
+- **2026-10-28 transaction history verification:** registered the existing transaction router and passed 12 live HTTP checks for sender/receiver history and details, unrelated-user isolation, missing records, absent/invalid tokens, and non-integer ids. History matched database ownership; existing balances and financial records stayed unchanged (wallet 1: AED 350; wallet 3: AED 250). Created unrelated test user 4 with a zero-balance wallet. See [results](TRANSFER_TEST_RESULTS.md). Multi-item ordering and repeatable automated coverage remain pending.
 - **2026-10-25 live transfer API verification:** registered the existing transfer router in `main.py`, created a second test user, and seeded development AED balances of 500/100. A real HTTP transfer of 150 returned `201/SUCCESS`, leaving wallet 1 at AED 350 and wallet 3 at AED 250, with one Transaction and two ledger entries. Zero amount, same wallet, different currencies, insufficient funds, inactive sender, inactive receiver, and another user's sender were all rejected with unchanged balances/history. Both wallets restored to ACTIVE. See [full results and fixture caveat](TRANSFER_TEST_RESULTS.md).
 
 - **2026-09-05:** authentication progress documented, including Redis rotation, logout-all, stale-index cleanup, and recorded real HTTP verification.

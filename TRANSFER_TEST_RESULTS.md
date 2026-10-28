@@ -74,5 +74,34 @@ idempotency, network failure during commit, or posting-failure rollback against
 PostgreSQL. The successful response and committed database records were checked
 together; rejection cases alone do not prove every partial-failure rollback path.
 
-Next: authenticated transaction and ledger history endpoints, repeatable
-integration tests, and an explicit transfer idempotency design.
+Next: authenticated ledger history, repeatable integration tests, and an explicit
+transfer idempotency design. Transaction history verification is recorded below.
+
+## Transaction history API verification — October 28, 2026
+
+Registered the existing transaction router in `app/main.py`, then performed
+12 real HTTP checks against the running API and compared results with PostgreSQL.
+
+| Case | Endpoint | Expected and actual result |
+| --- | --- | --- |
+| Sender history | `GET /transactions` | 200; includes transaction 1 |
+| Sender detail | `GET /transactions/1` | 200; matches the list item |
+| Receiver history | `GET /transactions` | 200; includes transaction 1 |
+| Receiver detail | `GET /transactions/1` | 200; matches the list item |
+| Unrelated user history | `GET /transactions` | 200 with an empty list |
+| Unrelated user detail | `GET /transactions/1` | 404: Transaction not found |
+| Missing transaction | `GET /transactions/10001` | Same 404 response as unauthorized access |
+| No authentication | Both endpoints, two checks | 401 |
+| Invalid token | Both endpoints, two checks | 401 |
+| Non-integer id | `GET /transactions/not-an-integer` | 422 |
+
+The history contents and order were compared with the user's wallet ownership
+and database transactions. The current fixture has only one transaction, so
+multi-item ordering still needs a larger fixture. A separate unrelated account
+was created for access-control checks: user 4,
+`nexa.history.qa.e922c710@example.com`, with a default zero-balance AED wallet.
+
+The existing wallet balances, transaction records, and ledger records were
+compared before and after the checks and remained unchanged. Wallet 1 still has
+**350.0000 AED** and wallet 3 still has **250.0000 AED**. These are manual live
+integration checks, not a committed automated regression suite.
