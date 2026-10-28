@@ -429,7 +429,7 @@ For an unknown wallet and another user's wallet, the detail endpoint returns the
 
 ### TransferService.transfer(): implementation and flowchart
 
-Source: [transfer_service.py](app/services/transfer_service.py). The service now implements the first fee-free internal-transfer flow. A `POST /transfers` route is still pending; this service accepts `user_id` from its caller, so the future route must obtain it from `current_user`.
+Source: [transfer_service.py](app/services/transfer_service.py). The service now implements the first fee-free internal-transfer flow. The registered `POST /transfers` route obtains `user_id` from `current_user` and passes it to this service.
 
 ```mermaid
 flowchart TD
@@ -473,7 +473,7 @@ The service generates a reference using `f"TXN-{uuid4().hex}"`, for example `TXN
 
 The service also supplies the transaction currency and maps the optional `message` argument to the existing `gateway_message` field. A distinct user-note field has not been introduced.
 
-**Verification:** local in-memory SQLite checks covered a successful AED 100 transfer, exactly two linked entries with correct directions/types/currency, each business validation, and rollback after flushing a simulated failed posting. These were one-off checks, not a committed automated test suite. They do not verify PostgreSQL row locks or concurrent transfers, and no transfer HTTP endpoint has been tested. Amount precision/rounding and idempotency still need work before treating the service as complete.
+**Verification:** local in-memory SQLite checks covered a successful AED 100 transfer, exactly two linked entries with correct directions/types/currency, each business validation, and rollback after flushing a simulated failed posting. These were one-off checks, not a committed automated test suite. They do not verify PostgreSQL row locks or concurrent transfers, and they did not test the HTTP endpoint. Subsequent real HTTP/PostgreSQL checks passed for an AED 150 transfer and seven rejection cases; see [TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md) for final balances and fixture setup. Amount precision/rounding and idempotency still need work before treating the service as complete.
 
 ### First internal-transfer business rules — agreed before coding
 
@@ -525,7 +525,7 @@ This diagram explains the business decisions; it does not prescribe separate unl
 
 ### Agreed first-transfer flow: one commit at the end
 
-The planned `POST /transfers` endpoint will authenticate the caller and delegate the operation to `TransferService`. This first internal-transfer flow does not wait for an external gateway. The service is implemented; the endpoint is not implemented yet.
+The `POST /transfers` endpoint authenticates the caller and delegates the operation to `TransferService`. This first internal-transfer flow does not wait for an external gateway. Both the service and endpoint are implemented, with sequential integration results recorded separately.
 
 ```mermaid
 flowchart TD
@@ -584,7 +584,7 @@ flowchart TD
 
 One transaction explains both entries. Each entry changes one wallet; the fee-free internal transfer conserves the total AED amount.
 
-Suppose Alice owns Wallet A with AED 150, and Bob owns Wallet B with AED 20. Alice requests an AED 100 internal transfer without fees. The following records illustrate the result of a successful service call; HTTP integration is still pending. `T1`, `L1`, `L2`, `A`, and `B` are readable labels standing in for actual database ids.
+Suppose Alice owns Wallet A with AED 150, and Bob owns Wallet B with AED 20. Alice requests an AED 100 internal transfer without fees. The following records illustrate the result of a successful service call; the separate live API report uses AED 150 and records the actual test wallets. `T1`, `L1`, `L2`, `A`, and `B` are readable labels standing in for actual database ids.
 
 ```text
 Transaction T1
@@ -762,7 +762,7 @@ Missing wallet ids are omitted, so a two-wallet request may return fewer than tw
 
 ### Next implementation step
 
-Expose the service through an authenticated transfer endpoint, define request/response schemas and amount precision, and add repeatable PostgreSQL tests for posting, rollback, and concurrent opposite-direction transfers. Add idempotency before supporting retries. The current service is a first implementation, not a fully verified transfer API.
+Add authenticated transaction and ledger history endpoints, define amount precision, and add repeatable PostgreSQL tests for posting, rollback, and concurrent opposite-direction transfers. Add idempotency before supporting retries. The current service is a first implementation, not a fully verified transfer API.
 
 ### Why pending is different from success
 

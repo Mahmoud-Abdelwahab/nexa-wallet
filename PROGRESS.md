@@ -333,9 +333,9 @@ The wallet notes in `terminal.md` specify user ownership, currency as a wallet a
 - Ownership and currency uniqueness are implemented. The API currently exposes creation and reads, including the stored balance; there is no direct balance-update endpoint.
 - The non-negative balance rule remains a design requirement: the current wallet model and initial migration do not define a `balance >= 0` database check.
 - Duplicate creation is checked before insertion, and the database enforces uniqueness. Concurrent duplicate requests still need explicit `IntegrityError` handling and rollback to consistently return `409`.
-- Initial `TransferService.transfer()` now validates the eight internal-transfer rules, locks both wallets through the repository, creates the transaction and paired ledger entries, updates balances, and commits once with rollback on posting failure. The transfer API, PostgreSQL concurrency verification, idempotency, and precision policy remain pending. Top-up/withdraw execution and gateway integration are not implemented.
+- Initial `TransferService.transfer()` now validates the eight internal-transfer rules, locks both wallets through the repository, creates the transaction and paired ledger entries, updates balances, and commits once with rollback on posting failure. The transfer API is registered and sequential HTTP integration checks passed; PostgreSQL concurrency verification, idempotency, and precision policy remain pending. Top-up/withdraw execution and gateway integration are not implemented.
 
-**Verification scope:** the authentication integration results above are preserved from the earlier progress log. This review checked source and history only; it did not rerun those live scenarios. No automated test suite is currently present, and wallet HTTP integration verification has not been recorded.
+**Verification scope:** the authentication integration results above are preserved from the earlier progress log. This review checked source and history only; it did not rerun those live scenarios. No automated test suite is currently present. Subsequent real API transfer verification, including wallet creation and balance reads, is recorded in [TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md).
 
 **Next:**
 
@@ -344,6 +344,8 @@ The wallet notes in `terminal.md` specify user ownership, currency as a wallet a
 3. Implement the transaction/ledger workflow and balance changes, including transfer, top-up, withdrawal, and concurrency rules.
 
 #### Recent Milestones
+
+- **2026-10-25 live transfer API verification:** registered the existing transfer router in `main.py`, created a second test user, and seeded development AED balances of 500/100. A real HTTP transfer of 150 returned `201/SUCCESS`, leaving wallet 1 at AED 350 and wallet 3 at AED 250, with one Transaction and two ledger entries. Zero amount, same wallet, different currencies, insufficient funds, inactive sender, inactive receiver, and another user's sender were all rejected with unchanged balances/history. Both wallets restored to ACTIVE. See [full results and fixture caveat](TRANSFER_TEST_RESULTS.md).
 
 - **2026-09-05:** authentication progress documented, including Redis rotation, logout-all, stale-index cleanup, and recorded real HTTP verification.
 - **2026-09-06 — `a4615e4`:** wallet repository lookups by id and user/currency; wallet business-rule notes.
