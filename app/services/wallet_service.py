@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
 
+from app.models.ledger_entry import LedgerEntry
 from app.models.wallet import Currency, Wallet
+from app.repositories.ledger_repository import LedgerRepository
 from app.repositories.wallet_repository import WalletRepository
 
 
@@ -9,6 +11,7 @@ class WalletService:
     def __init__(self, db: Session):
         self.db = db
         self.wallet_repository = WalletRepository(db)
+        self.ledger_repository = LedgerRepository(db)
 
     def create_wallet(
         self,
@@ -58,3 +61,28 @@ class WalletService:
             raise ValueError("Wallet not found") #! not returning  --> You don't own this wallet for seurity reasonse - to not disclose if the wallet exists or not, we just say not found
 
         return wallet
+
+
+    def get_wallet_statement(
+        self,
+        wallet_id: int,
+        user_id: int,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[LedgerEntry]:
+        # Check ownership before reading any ledger entries.
+        wallet = self.wallet_repository.get_by_id_and_user(
+            wallet_id=wallet_id,
+            user_id=user_id,
+        )
+
+        # Hide whether a missing or another user's wallet exists.
+        if wallet is None:
+            raise ValueError("Wallet not found")
+
+        # Return only the requested page for the authorized wallet.
+        return self.ledger_repository.get_by_wallet_id(
+            wallet_id=wallet_id,
+            limit=limit,
+            offset=offset,
+        )
