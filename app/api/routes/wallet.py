@@ -9,6 +9,7 @@ from app.services.wallet_service import WalletService
 from app.api.routes.dependencies import get_current_user
 
 
+# These endpoints use synchronous SQLAlchemy; FastAPI runs them in its thread pool.
 router = APIRouter(
     prefix="/wallets",
     tags=["Wallets"],
@@ -21,7 +22,7 @@ router = APIRouter(
     response_model=WalletResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_wallet(
+def create_wallet(
     request: CreateWalletRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -46,7 +47,7 @@ async def create_wallet(
     "",
     response_model=list[WalletResponse],
 )
-async def get_wallets(
+def get_wallets(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -62,7 +63,7 @@ async def get_wallets(
     "/{wallet_id}",
     response_model=WalletResponse,
 )
-async def get_wallet(
+def get_wallet(
     wallet_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -82,10 +83,20 @@ async def get_wallet(
         )
 
 
+# Request
+#    ↓
+# FastAPI يسلّم التنفيذ لـworker thread
+#    ↓
+# الـthread ينفّذ الاستعلام وينتظر الداتابيز
+#    ↓
+# الـevent loop يفضل متاح لطلبات تانية
 @router.get(
     "/{wallet_id}/entries",
     response_model=list[LedgerEntryResponse],
 )
+# Use def because our SQLAlchemy Session is synchronous. FastAPI runs this
+# sync endpoint in a thread pool so database calls do not block the event loop.
+# A synchronous call inside async def would still block unless offloaded.
 def get_wallet_statement(
     wallet_id: int,
     limit: int = Query(default=20, ge=1, le=100),

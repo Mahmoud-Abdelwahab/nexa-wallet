@@ -8,6 +8,7 @@ from app.schemas.transfer import TransferRequest, TransferResponse
 from app.services.transfer_service import TransferService
 
 
+# These endpoints use synchronous SQLAlchemy; FastAPI runs them in its thread pool.
 router = APIRouter(
     prefix="/transfers",
     tags=["Transfers"],
@@ -19,7 +20,7 @@ router = APIRouter(
     response_model=TransferResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_transfer(
+def create_transfer(
     request: TransferRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

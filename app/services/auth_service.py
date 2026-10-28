@@ -1,6 +1,7 @@
-from datetime import date, datetime, timezone
+from datetime import date
 
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.mappers.user_mapper import UserMapper
 from app.models.user import User
@@ -8,7 +9,7 @@ from app.models.wallet import Wallet
 from app.repositories import UserRepository, WalletRepository
 from app.core.security import create_access_token, hash_password, verify_password
 from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenRedisStore
-from app.schemas.authentication import AuthResponse, UserResponse
+from app.schemas.authentication import AuthResponse
 from app.schemas.refresh_session import RefreshSession
 from app.services.refresh_token_service import RefreshTokenService
 
@@ -17,13 +18,24 @@ from app.services.refresh_token_service import RefreshTokenService
 # dummy passsword we use to prevent timing attacks when the user does not exist. This ensures that the time taken for the operation is consistent, regardless of whether the user exists or not.
 DUMMY_PASSWORD_HASH = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeg6Lruj3vjPGga31lW"
 
-# AuthService
-#     │
-#     ├── asks RefreshTokenService
-#     │        "create me a session"
-#     │
-#     └── asks RefreshTokenRedisStore
-#              "save this session"
+# AuthService keeps the original entry-point names and business flow.
+# Helpers ending in _sync run the blocking steps in a worker thread.
+# Redis steps stay async and run through await.
+#
+# register_user / login_user
+#             |
+#             v
+# Save user / verify password (worker thread)
+#             |
+#             v
+# _build_auth_response
+#             |
+#             +--> RefreshTokenService: generate token + session
+#             |
+#             +--> RefreshTokenRedisStore: await session storage
+#             |
+#             v
+# Return access JWT + refresh token + user
 
 
 class AuthService:
@@ -42,6 +54,16 @@ class AuthService:
         self.refresh_token_service = refresh_token_service
         self.refresh_token_store = refresh_token_store
 
+    # register_user
+    #      |
+    #      v
+    # Check duplicates -> hash password -> create User + AED Wallet
+    #      |              (all inside _register_user_sync)
+    #      v
+    # Commit User + Wallet together
+    #      |
+    #      v
+    # _build_auth_response -> store Redis session -> return AuthResponse
     async def register_user(
         self,
         username: str,
@@ -50,6 +72,25 @@ class AuthService:
         mobile: str,
         date_of_birth: date,
     ) -> AuthResponse:
+        # Keep SQLAlchemy and password hashing off the event loop.
+        user = await run_in_threadpool(
+            self._register_user_sync,
+            username,
+            email,
+            password,
+            mobile,
+            date_of_birth,
+        )
+        return await self._build_auth_response(user)
+
+    def _register_user_sync(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        mobile: str,
+        date_of_birth: date,
+    ) -> User:
         email = email.lower()
 
         # Check if username or email is already taken
@@ -94,10 +135,22 @@ class AuthService:
             self.db.rollback()
             raise
 
-        # Create token ONLY after successful commit
+        # The async caller creates the Redis session only after this commit.
+        return user
+
+    # login_user
+    #      |
+    #      v
+    # Find user -> verify password (inside _login_user_sync)
+    #      |
+    #      v
+    # _build_auth_response -> store Redis session -> return AuthResponse
+    async def login_user(self, email: str, password: str) -> AuthResponse:
+        # The database query and bcrypt verification are both synchronous.
+        user = await run_in_threadpool(self._login_user_sync, email, password)
         return await self._build_auth_response(user)
 
-    async def login_user(self, email: str, password: str) -> AuthResponse:
+    def _login_user_sync(self, email: str, password: str) -> User:
         email = email.lower()
 
         user = self.user_repository.get_by_email(email)
@@ -114,15 +167,35 @@ class AuthService:
         if not user or not is_password_valid:
             raise ValueError("Invalid email or password")
 
-        return await self._build_auth_response(user)
+        return user
 
+    # _build_auth_response
+    #      |
+    #      v
+    # Generate refresh session + build AuthResponse (worker thread)
+    #      |
+    #      v
+    # Await storing the session in Redis
+    #      |
+    #      v
+    # Return AuthResponse
     async def _build_auth_response(self, user: User) -> AuthResponse:
-        access_token = create_access_token(
-            data={
-                "sub": str(user.id),
-                "token_version": user.token_version,
-            }
+        # A committed ORM object may reload attributes on access. Read and
+        # serialize it in a worker too, before awaiting Redis on the event loop.
+        response, token_hash, session = await run_in_threadpool(
+            self._build_auth_response_sync, user
         )
+
+        await self.refresh_token_store.store_session(
+            token_hash=token_hash,
+            session=session,
+        )
+        return response
+
+    def _build_auth_response_sync(
+        self,
+        user: User,
+    ) -> tuple[AuthResponse, str, RefreshSession]:
 
         (
             refresh_token,
@@ -130,11 +203,21 @@ class AuthService:
             session,
         ) = self.refresh_token_service.create_refresh_session(user.id)
 
-        await self.refresh_token_store.store_session(
-            token_hash=token_hash,
-            session=session,
-        )
+        response = self._create_auth_response_sync(user, refresh_token)
+        return response, token_hash, session
 
+    def _create_auth_response_sync(
+        self,
+        user: User,
+        refresh_token: str,
+    ) -> AuthResponse:
+        # Called in a worker: all ORM attribute reads finish before returning.
+        access_token = create_access_token(
+            data={
+                "sub": str(user.id),
+                "token_version": user.token_version,
+            }
+        )
         return AuthResponse(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -142,15 +225,22 @@ class AuthService:
             user=UserMapper.to_response(user),
         )
 
-#! 1- take refresh token from request
-#  2- hash it and get the session related to id from redis
-#  3- calculate the new absolute_expires_at [ not new ] we calcuate the remaining days from eg 90 day
-#  4- then get user to  create new access token using it's id and create rotated refresh token useing same userid and calcualted absolute_expires_at and new raw refresh token
-# we ca use the userID from the session that we get from redis but his not better way foe security u need to check if the user still exists or you may need to check if user status = active or not blocked to not generate token from him
-#  5- create new rotated session with same old idenetiy and new absolute_expires_at and retrun new refersh raw and hashed ans session
-#! 6- importatn step to rotate the token in redis, get old refresh hash then delete it , then add the new one and return the result if success
-#  7- create normal access token and create the same  AuthResponse and send it to the client with new access token and refresh token also
-#  8- refresh Token used once only same as access token
+    # refresh_access_token
+    #      |
+    #      v
+    # Hash incoming token -> await Redis session lookup
+    #      |
+    #      v
+    # Check expiry -> load user (worker thread)
+    #      |
+    #      v
+    # Generate replacement token with the same session identity
+    #      |
+    #      v
+    # Await atomic Redis rotation: consume old token; store new token
+    #      |
+    #      v
+    # Create access JWT + user response (worker thread) -> return
     async def refresh_access_token(
         self,
         refresh_token: str,
@@ -187,7 +277,8 @@ class AuthService:
             raise ValueError("Refresh session expired")
 
         # 4. Find the user attached to the refresh session.
-        user = self.user_repository.get_by_id(
+        user = await run_in_threadpool(
+            self.user_repository.get_by_id,
             session.user_id
         )
 
@@ -213,20 +304,11 @@ class AuthService:
             raise ValueError("Invalid refresh token")
 
         # 7. Create a new access token and return both new tokens to the client.
-        access_token = create_access_token(
-            data={
-                "sub": str(user.id),
-                "token_version": user.token_version,
-            }
+        return await run_in_threadpool(
+            self._create_auth_response_sync, user, new_refresh_token
         )
 
-        return AuthResponse(
-            access_token=access_token,
-            refresh_token=new_refresh_token,
-            token_type="bearer",
-            user=UserMapper.to_response(user),
-        )
-
+    # logout -> hash refresh token -> await revoking this session only
     async def logout(
         self,
         refresh_token: str,
@@ -242,15 +324,27 @@ class AuthService:
             user_id=user_id,
         )
 
+    # logout_all
+    #      |
+    #      v
+    # Await revocation of all Redis refresh sessions
+    #      |
+    #      v
+    # Increment token_version -> commit (inside _logout_all_sync)
     async def logout_all(
         self,
         user: User,
     ) -> None:
 
+        # The sync authentication dependency has already loaded this user's id.
         await self.refresh_token_store.revoke_all_sessions(
             user.id
         )
 
+        # Redis stays async; the SQLAlchemy mutation and commit run in a worker.
+        await run_in_threadpool(self._logout_all_sync, user)
+
+    def _logout_all_sync(self, user: User) -> None:
         # Increment the token version to invalidate all existing access tokens for this user
         user.token_version += 1
         #! why we didn't do this in logout() because we need to logout once device only and this token_vesion related to the user level so if we incremant it all other devices will be logged out and we don't want that in logout() but in logout_all() we want to logout all devices so we increment it here

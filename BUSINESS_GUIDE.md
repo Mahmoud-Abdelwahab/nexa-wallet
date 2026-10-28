@@ -830,6 +830,65 @@ The service currently raises `ValueError`; routers translate that into HTTP erro
 
 The current migrations create the initial tables, allow duplicate usernames, and add `token_version`. They record schema evolution, not a history of individual financial operations.
 
+### Execution review: def, async def, and the thread pool
+
+Reviewed on **October 28, 2026**. The project's SQLAlchemy `Session` is still
+synchronous; moving work to a thread does not turn it into async database I/O.
+
+| Code | Execution choice | Reason |
+| --- | --- | --- |
+| Wallet, transfer, transaction, ledger, and user endpoints | `def` | FastAPI executes synchronous endpoints in its thread pool |
+| Authentication endpoints and their orchestration methods | `async def` | They await the async Redis store |
+| Authentication SQLAlchemy work and password hashing/verification | Sync helpers awaited through `run_in_threadpool` | Prevent database waits and bcrypt work from occupying the event-loop thread |
+| Redis store and Redis health check | `async def` | The Redis client supports awaitable I/O |
+| Basic health response | `async def` | Returns a small dictionary without blocking work; no thread is needed |
+| Application lifespan | `async def` | Awaits Redis client cleanup |
+
+```mermaid
+flowchart TD
+    R["Request"] --> K{"Which endpoint?"}
+    K -->|Synchronous SQLAlchemy only| D["def endpoint"]
+    D --> W["FastAPI thread pool: service and repository"]
+    W --> DB["Worker waits for synchronous database result"]
+    K -->|Authentication with async Redis| A["async def endpoint"]
+    A --> H["await run_in_threadpool: SQLAlchemy / bcrypt helper"]
+    H --> BACK["Return to async orchestration"]
+    BACK --> REDIS["await Redis I/O on the event loop"]
+    DB --> OUT["Return response"]
+    REDIS --> OUT
+```
+
+The diagram is simplified: refresh reads Redis before loading the user, while
+logout-all revokes Redis sessions before updating the database token version.
+Each synchronous helper is awaited before another operation uses the same
+request Session. The Session must not be shared by simultaneous tasks.
+
+An ordinary `def` service called directly from `async def` does not get a worker
+automatically. The authentication service therefore offloads its synchronous
+helpers explicitly. It also serializes ORM user data in a worker because reading
+attributes expired by `commit()` can trigger another database query. The async
+orchestrator returns response-schema data after awaiting Redis.
+
+This keeps one request waiting for its own result while letting the event loop
+serve other work. Thread-pool and database-pool capacity remain finite. No
+database schema changed, so no Alembic migration is required.
+
+Verification: seven automated execution-boundary tests assert worker-thread
+database/password work, Redis awaits, route execution modes, and registration
+rollback. Live checks covered 25 authentication/endpoint scenarios plus 13
+existing-wallet/ledger/transaction scenarios. A new test user (id 5) has a
+zero-balance AED wallet; existing wallet balances remain AED 350 and AED 250.
+These tests verify behavior and execution placement, not a throughput benchmark.
+
+Run the automated tests with the project environment:
+
+```bash
+DEBUG=false .venv/bin/python -m unittest discover -s tests -v
+```
+
+References: [FastAPI execution behavior](https://fastapi.tiangolo.com/async/#path-operation-functions)
+and [SQLAlchemy's separate async API](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html).
+
 ## 10. API map: business action to current response
 
 The table lists normal success and selected business errors. Schema validation can also return `422`; protected routes require valid authentication.

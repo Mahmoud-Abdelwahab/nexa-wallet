@@ -335,7 +335,7 @@ The wallet notes in `terminal.md` specify user ownership, currency as a wallet a
 - Duplicate creation is checked before insertion, and the database enforces uniqueness. Concurrent duplicate requests still need explicit `IntegrityError` handling and rollback to consistently return `409`.
 - Initial `TransferService.transfer()` now validates the eight internal-transfer rules, locks both wallets through the repository, creates the transaction and paired ledger entries, updates balances, and commits once with rollback on posting failure. The transfer API is registered and sequential HTTP integration checks passed; PostgreSQL concurrency verification, idempotency, and precision policy remain pending. Top-up/withdraw execution and gateway integration are not implemented.
 
-**Verification scope:** the authentication integration results above are preserved from the earlier progress log. This review checked source and history only; it did not rerun those live scenarios. No automated test suite is currently present. Subsequent real API transfer verification, including wallet creation and balance reads, is recorded in [TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md).
+**Verification scope:** the original authentication integration results above are preserved from the earlier progress log. Subsequent real API transfer verification, including wallet creation and balance reads, is recorded in [TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md). On October 28, seven automated execution-boundary tests were added in `tests/test_execution_boundaries.py`; 25 live authentication/endpoint checks and 13 wallet/history regression checks also passed. Broader automated business-rule and PostgreSQL concurrency coverage remains pending.
 
 **Next:**
 
@@ -345,6 +345,8 @@ The wallet notes in `terminal.md` specify user ownership, currency as a wallet a
 
 #### Recent Milestones
 
+- **2026-10-28 authentication learning flow:** preserved the original `register_user`, `login_user`, `_build_auth_response`, `refresh_access_token`, `logout`, and `logout_all` method names and business sequence. Named new worker helpers with `_sync` suffixes and added comment flowcharts beside the original methods. Thread-pool behavior remains in place; all seven automated tests still pass.
+- **2026-10-28 sync/async review:** switched six SQLAlchemy-only endpoints (three wallet, two transaction, one transfer) to `def`. Kept async Redis/authentication/lifespan behavior and the nonblocking basic health response. Offloaded authentication SQLAlchemy calls, bcrypt work, ORM response serialization, and logout-all's database commit using awaited `run_in_threadpool` helpers. Seven automated tests and 38 live scenario checks passed. Created zero-balance test user 5; existing AED balances remain 350/250. Added an execution diagram and explanation to the business guide. No schema migration needed.
 - **2026-10-28 transaction history verification:** registered the existing transaction router and passed 12 live HTTP checks for sender/receiver history and details, unrelated-user isolation, missing records, absent/invalid tokens, and non-integer ids. History matched database ownership; existing balances and financial records stayed unchanged (wallet 1: AED 350; wallet 3: AED 250). Created unrelated test user 4 with a zero-balance wallet. See [results](TRANSFER_TEST_RESULTS.md). Multi-item ordering and repeatable automated coverage remain pending.
 - **2026-10-25 live transfer API verification:** registered the existing transfer router in `main.py`, created a second test user, and seeded development AED balances of 500/100. A real HTTP transfer of 150 returned `201/SUCCESS`, leaving wallet 1 at AED 350 and wallet 3 at AED 250, with one Transaction and two ledger entries. Zero amount, same wallet, different currencies, insufficient funds, inactive sender, inactive receiver, and another user's sender were all rejected with unchanged balances/history. Both wallets restored to ACTIVE. See [full results and fixture caveat](TRANSFER_TEST_RESULTS.md).
 
@@ -376,4 +378,4 @@ docker compose down        # Stop/remove containers; retain PostgreSQL volume
 
 ---
 
-_Last updated: 2026-10-25 — reconciled with current wallet APIs, route structure, migrations, local infrastructure notes, and remaining implementation/verification work._
+_Last updated: 2026-10-28 — reviewed sync/async execution, added worker-boundary tests, and verified authentication and history behavior against local PostgreSQL and Redis._

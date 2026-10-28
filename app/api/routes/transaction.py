@@ -8,6 +8,7 @@ from app.schemas.transaction import TransactionResponse
 from app.services.transaction_service import TransactionService
 
 
+# These endpoints use synchronous SQLAlchemy; FastAPI runs them in its thread pool.
 router = APIRouter(
     prefix="/transactions",
     tags=["Transactions"],
@@ -18,7 +19,7 @@ router = APIRouter(
     "",
     response_model=list[TransactionResponse],
 )
-async def get_transactions(
+def get_transactions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -31,7 +32,7 @@ async def get_transactions(
     "/{transaction_id}",
     response_model=TransactionResponse,
 )
-async def get_transaction(
+def get_transaction(
     transaction_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
