@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.core.errors import BusinessError
 from app.models.ledger_entry import LedgerEntry
 from app.models.wallet import Currency, Wallet
 from app.repositories.ledger_repository import LedgerRepository
@@ -27,7 +28,7 @@ class WalletService:
         )
 
         if existing_wallet:
-            raise ValueError(
+            raise BusinessError(
                 f"{currency.value} wallet already exists"
             )
 
@@ -58,7 +59,7 @@ class WalletService:
         )
 
         if wallet is None:
-            raise ValueError("Wallet not found") #! not returning  --> You don't own this wallet for seurity reasonse - to not disclose if the wallet exists or not, we just say not found
+            raise BusinessError("Wallet not found") #! not returning  --> You don't own this wallet for seurity reasonse - to not disclose if the wallet exists or not, we just say not found
 
         return wallet
 
@@ -78,7 +79,7 @@ class WalletService:
 
         # Hide whether a missing or another user's wallet exists.
         if wallet is None:
-            raise ValueError("Wallet not found")
+            raise BusinessError("Wallet not found")
 
         # Return only the requested page for the authorized wallet.
         return self.ledger_repository.get_by_wallet_id(

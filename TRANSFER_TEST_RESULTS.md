@@ -105,3 +105,39 @@ The existing wallet balances, transaction records, and ledger records were
 compared before and after the checks and remained unchanged. Wallet 1 still has
 **350.0000 AED** and wallet 3 still has **250.0000 AED**. These are manual live
 integration checks, not a committed automated regression suite.
+
+## 2026-10-31 — Live PostgreSQL idempotency and concurrency
+
+Executed `scripts/test_live_idempotency.py --run-local` against the local HTTP API,
+PostgreSQL 16 and Redis. Migration `587c12b7d3ee` was already at head.
+Run ID: `2e480f871d83`. Registered two disposable users and logged in via the API.
+Wallets **7 (sender)** and **8 (receiver)** received synthetic test-only opening
+balances of **500 AED / 100 AED** directly in the database. These opening funds
+are fixtures, not actual top-ups, and have no opening ledger entries.
+
+| Scenario | Key | HTTP | Transaction | Balances (7 / 8) |
+| --- | --- | --- | --- | --- |
+| Transfer 100 AED | TEST-001 | 201 | 2 | 400 / 200 |
+| Same body and key | TEST-001 | 201 | 2, identical response | 400 / 200 |
+| Change amount to 200 AED | TEST-001 | 409 | No new transaction | 400 / 200 |
+| Three concurrent 100 AED requests | TEST-CONCURRENT-001 | 201 / 201 / 201 | 3 / 3 / 3 | 300 / 300 |
+
+Verified in PostgreSQL for **each key**: one COMPLETED idempotency record linked
+to one SUCCESS transaction, exactly one DEBIT and one CREDIT TRANSFER entry of
+100 AED. Exactly two transfers were created overall. All pre-existing wallet
+balances were unchanged.
+
+Concurrency was observed, not merely assumed: the test held the sender row lock,
+started three HTTP requests together, and observed three direct/indirect lock
+waiters using `pg_blocking_pids` before releasing the lock. All returned the same
+transaction and response body. The script retains its test accounts and financial
+records for inspection and never prints credentials or tokens.
+
+Re-run locally (creates fresh fixture accounts each run):
+
+```bash
+DEBUG=false .venv/bin/python scripts/test_live_idempotency.py --run-local
+```
+
+This verifies this three-request contention scenario. It does not establish
+production readiness under load, pool exhaustion, network failures or crashes.

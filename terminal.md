@@ -1,8 +1,10 @@
 docker compose up -d  =====>  to start runing the containsers we have two now postgress and redis
 uvicorn app.main:app --reload  ====> to run the server 
 
+alembic revision --autogenerate -m "add idempotency records" ==> add new thing to DB like table or attrubte any change in DB need to do this migration 
 
-
+alembic upgrade head ===> 
+alembic current ==>
 docker compose up -d      # شغّل
 docker compose down       # قفل واحذف الكونتينرات (الـ volume بيفضل)
 docker compose logs -f    # شوف اللوجز لايف

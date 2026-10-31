@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.errors import BusinessError
 from app.api.routes.dependencies import get_current_user
 from app.database import get_db
 from app.schemas.authentication import (
@@ -54,7 +55,7 @@ async def register(
             date_of_birth=request.date_of_birth,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
@@ -75,7 +76,7 @@ async def login(
             password=request.password,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
@@ -95,7 +96,7 @@ async def refresh(
             request.refresh_token,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),

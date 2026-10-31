@@ -49,37 +49,36 @@ def get_current_user(
             detail="Invalid authentication credentials",
         )
 
-    try: 
+    try:
         user_id = int(user_id)
-    except ValueError:
+    except (TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user ID in token",
+            detail="Invalid authentication credentials",
         )
     user_repository = UserRepository(db)
     user = user_repository.get_by_id(user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="Invalid authentication credentials",
         )
 
+    # Every rejected token gets the same message, including a missing user.
     token_version = payload.get("token_version")
-    
     if token_version is None:
-          raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials",
-            )
-    
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+        )
     try:
-         token_version = int(token_version)
+        token_version = int(token_version)
     except (TypeError, ValueError):
-           raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials",
-            )
-    
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+        )
+
     if token_version != user.token_version:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -3,6 +3,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from app.core.errors import BusinessError
 from app.mappers.user_mapper import UserMapper
 from app.models.user import User
 from app.models.wallet import Wallet
@@ -93,12 +94,12 @@ class AuthService:
     ) -> User:
         email = email.lower()
 
-        # Check if username or email is already taken
+        # Use one message so we do not identify which contact belongs to an account.
         if self.user_repository.get_by_mobile(mobile):
-            raise ValueError("Mobile number already registered")
+            raise BusinessError("Unable to register with these details")
 
         if self.user_repository.get_by_email(email):
-            raise ValueError("Email already registered")
+            raise BusinessError("Unable to register with these details")
 
         # Hash password before storing it
         password_hash = hash_password(password)
@@ -165,7 +166,7 @@ class AuthService:
             is_password_valid = False
 
         if not user or not is_password_valid:
-            raise ValueError("Invalid email or password")
+            raise BusinessError("Invalid email or password")
 
         return user
 
@@ -260,7 +261,7 @@ class AuthService:
         )
 
         if session is None:
-            raise ValueError("Invalid refresh token")
+            raise BusinessError("Invalid refresh token")
 
         # 3. Calculate the new Redis TTL without exceeding absolute expiration.
         ttl_seconds = (
@@ -274,7 +275,7 @@ class AuthService:
                 old_token_hash,
                 user_id=session.user_id,
             )
-            raise ValueError("Refresh session expired")
+            raise BusinessError("Invalid refresh token")
 
         # 4. Find the user attached to the refresh session.
         user = await run_in_threadpool(
@@ -283,7 +284,7 @@ class AuthService:
         )
 
         if user is None:
-            raise ValueError("User not found")
+            raise BusinessError("Invalid refresh token")
 
         # 5. Generate a new refresh token while keeping the same session identity
         #    and absolute expiration.
@@ -301,7 +302,7 @@ class AuthService:
         )
 
         if not success:
-            raise ValueError("Invalid refresh token")
+            raise BusinessError("Invalid refresh token")
 
         # 7. Create a new access token and return both new tokens to the client.
         return await run_in_threadpool(
