@@ -151,7 +151,7 @@ Source: [transaction.py](app/models/transaction.py).
 | Field | Purpose and rule |
 | --- | --- |
 | `id` | Internal transaction identity |
-| `reference` | Unique operation reference; generation and external usage are not implemented yet |
+| `reference` | Unique operation reference; internal transfers generate `TXN-` followed by a full UUID hex value, while external usage is not defined yet |
 | `sender_wallet_id`, `receiver_wallet_id` | The wallets participating in the two roles |
 | `amount`, `currency` | The requested monetary value and unit |
 | `status` | `PENDING` by default; enum also includes `SUCCESS`, `FAILED`, `CANCELLED` |
@@ -180,7 +180,7 @@ The database enforces `amount > 0`. Direction expresses whether money leaves or 
 
 In this project's wallet convention, **debit decreases the wallet balance** and **credit increases it**. Full accounting systems classify accounts more precisely; this wallet model is not yet a complete accounting system.
 
-The intended design treats the ledger as financial truth and the wallet balance as a stored value that must agree with it. No current code computes that agreement or posts entries. Append-only entries and correcting mistakes through compensating entries are useful future rules, but immutability is not currently enforced.
+The intended design treats the ledger as financial truth and the wallet balance as a stored value that must agree with it. The transfer service now posts paired entries and updates balances together; no reconciliation job independently checks their agreement. Append-only entries and correcting mistakes through compensating entries are useful future rules, but immutability is not currently enforced.
 
 ## 5. Account and authentication business flows
 
@@ -425,11 +425,59 @@ For an unknown wallet and another user's wallet, the detail endpoint returns the
 
 `WalletResponse` returns `id`, `currency`, `balance`, and `status`. Pydantic's `from_attributes=True` lets it read these values from the ORM object.
 
-## 8. Planned money movement: an example and its open decisions
+## 8. Internal transfers: service flow, examples, and open decisions
+
+### TransferService.transfer(): implementation and flowchart
+
+Source: [transfer_service.py](app/services/transfer_service.py). The service now implements the first fee-free internal-transfer flow. The registered `POST /transfers` route obtains `user_id` from `current_user` and passes it to this service.
+
+```mermaid
+flowchart TD
+    START["TransferService.transfer()"] --> A["1. Validate amount greater than zero"]
+    A --> D["2. Reject identical sender and receiver ids"]
+    D --> LOCK["3. Lock sender and receiver: ORDER BY id FOR UPDATE"]
+    subgraph DB["Same database transaction: hold locks through posting"]
+        LOCK --> E["4. Check both wallets exist; map them by id"]
+        E --> O["5. Validate sender ownership"]
+        O --> S["6. Validate both wallets are ACTIVE"]
+        S --> C["7. Validate same currency"]
+        C --> B["8. Validate sufficient sender balance"]
+        B --> T["9. Create Transaction: PENDING; flush for id"]
+        T --> DEBIT["10. Create sender DEBIT ledger: type TRANSFER"]
+        DEBIT --> CREDIT["11. Create receiver CREDIT ledger: type TRANSFER"]
+        CREDIT --> BAL["12. Subtract sender balance; add receiver balance"]
+        BAL --> SUCCESS["13. Transaction status = SUCCESS"]
+        SUCCESS --> COMMIT["14. COMMIT once"]
+    end
+    COMMIT --> RETURN["Return successful Transaction"]
+    LOCK -. "Any validation or posting exception in the protected block" .-> RB["ROLLBACK; re-raise error"]
+    RB --> UNDO["No new Transaction or entries; no partial balance changes"]
+    A -. "Invalid amount" .-> REJECT["Reject before locking or posting"]
+    D -. "Same wallet" .-> REJECT
+    style COMMIT fill:#dcfce7,stroke:#15803d,color:#111827
+    style RB fill:#fee2e2,stroke:#b91c1c,color:#111827
+```
+
+The failure arrow represents exceptions throughout the service's `try` block, not just lock acquisition. A rollback releases the locks and undoes the database transaction's uncommitted changes. `flush()` obtains the transaction id without an intermediate commit.
+
+**Ledger names have different jobs:**
+
+| Attribute | Enum | Values used for a transfer |
+| --- | --- | --- |
+| `direction` | `LedgerDirection` | Sender `DEBIT`; receiver `CREDIT` |
+| `entry_type` | `LedgerEntryType` | `TRANSFER` for both entries |
+
+`LedgerEntryType.DEBIT` and `LedgerEntryType.CREDIT` do not exist. The operation type stays `TRANSFER`; direction tells us which wallet loses or receives money. Both entries also carry the shared currency and link to the generated transaction id.
+
+The service generates a reference using `f"TXN-{uuid4().hex}"`, for example `TXN-7e2ba84f5c164b37a09d638f12c450be`. The prefix makes the reference recognizable as a transaction, while retaining all 32 UUID hex characters. The database's unique constraint enforces uniqueness. The complete reference is 36 characters, so the existing `String(50)` column needs no schema change or migration. Existing references are not rewritten. A future schema change, such as changing a column's length or constraints, requires an Alembic migration.
+
+The service also supplies the transaction currency and maps the optional `message` argument to the existing `gateway_message` field. A distinct user-note field has not been introduced.
+
+**Verification:** local in-memory SQLite checks covered a successful AED 100 transfer, exactly two linked entries with correct directions/types/currency, each business validation, and rollback after flushing a simulated failed posting. These were one-off checks, not a committed automated test suite. They do not verify PostgreSQL row locks or concurrent transfers, and they did not test the HTTP endpoint. Subsequent real HTTP/PostgreSQL checks passed for an AED 150 transfer and seven rejection cases; see [TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md) for final balances and fixture setup. Amount precision/rounding and idempotency still need work before treating the service as complete.
 
 ### First internal-transfer business rules — agreed before coding
 
-These rules define the first simple internal transfer, without fees or currency conversion. They are requirements for the planned `TransferService`, not validations already implemented in the application.
+These rules define the first simple internal transfer, without fees or currency conversion. They are implemented in the current `TransferService`; see the service flow and verification limits above.
 
 | # | Required rule | Why it matters |
 | --- | --- | --- |
@@ -477,7 +525,7 @@ This diagram explains the business decisions; it does not prescribe separate unl
 
 ### Agreed first-transfer flow: one commit at the end
 
-The planned `POST /transfers` endpoint will authenticate the caller and delegate the operation to `TransferService`. This first internal-transfer flow does not wait for an external gateway. The endpoint and service are not implemented yet.
+The `POST /transfers` endpoint authenticates the caller and delegates the operation to `TransferService`. This first internal-transfer flow does not wait for an external gateway. Both the service and endpoint are implemented, with sequential integration results recorded separately.
 
 ```mermaid
 flowchart TD
@@ -536,7 +584,7 @@ flowchart TD
 
 One transaction explains both entries. Each entry changes one wallet; the fee-free internal transfer conserves the total AED amount.
 
-Suppose Alice owns Wallet A with AED 150, and Bob owns Wallet B with AED 20. Alice requests an AED 100 internal transfer without fees. The following records illustrate the intended committed result; transfer execution is not implemented yet. `T1`, `L1`, `L2`, `A`, and `B` are readable labels standing in for actual database ids.
+Suppose Alice owns Wallet A with AED 150, and Bob owns Wallet B with AED 20. Alice requests an AED 100 internal transfer without fees. The following records illustrate the result of a successful service call; the separate live API report uses AED 150 and records the actual test wallets. `T1`, `L1`, `L2`, `A`, and `B` are readable labels standing in for actual database ids.
 
 ```text
 Transaction T1
@@ -594,7 +642,7 @@ The intended successful result is:
 
 The pair conserves AED value in this simplified internal transfer. Future fees need explicit additional accounting; they must not be unexplained differences between balances.
 
-The first eight transfer rules are defined above and still need implementation. Idempotency and permitted status transitions also need explicit design before retries and workflow transitions are supported.
+The first eight transfer rules are defined above and implemented in the service. Idempotency and permitted status transitions also need explicit design before retries and workflow transitions are supported.
 
 ### Required rule: commit the entire transfer together
 
@@ -656,9 +704,65 @@ The following partial outcomes must never be committed:
 
 If a pending transaction was committed earlier, rollback of the final posting does not erase that earlier record. It must leave no partially committed success posting; failure/retry handling for the pending record needs its own policy.
 
+### Lock ordering: why sort wallet ids before FOR UPDATE?
+
+The repository's `get_wallets_for_update(wallet_ids)` now selects the matching wallets with `.order_by(Wallet.id).with_for_update()`. The transfer service uses this query and keeps validation and posting in the same database transaction.
+
+Without consistent ordering, opposite-direction transfers can each hold the row the other needs:
+
+```mermaid
+flowchart LR
+    T1["Transfer 1 holds wallet 10"] -->|waits for wallet 20 held by| T2["Transfer 2 holds wallet 20"]
+    T2 -->|waits for wallet 10 held by| T1
+    style T1 fill:#fee2e2,stroke:#b91c1c,color:#111827
+    style T2 fill:#fee2e2,stroke:#b91c1c,color:#111827
+```
+
+That cycle is a deadlock. Sorting by the stable wallet id makes both transfers request rows in the same order, regardless of which wallet is the sender:
+
+```mermaid
+sequenceDiagram
+    participant T1 as Transfer 1: 10 to 20
+    participant W10 as Wallet 10
+    participant W20 as Wallet 20
+    participant T2 as Transfer 2: 20 to 10
+    T1->>W10: Acquire row lock
+    T2->>W10: Request row lock; wait here
+    Note over T2,W20: Transfer 2 has not locked wallet 20
+    T1->>W20: Acquire row lock
+    Note over T1: Validate and post within the transaction
+    T1->>W10: Commit releases lock
+    T1->>W20: Same commit releases lock
+    W10-->>T2: Waiting lock can now be acquired
+    T2->>W20: Acquire row lock
+    Note over T2: Validate against current balances, then post
+```
+
+The diagram illustrates a case where Transfer 1 acquires wallet 10 first; either transfer can win. All transfer paths must follow the same ascending-id lock protocol. This reduces deadlock risk for these wallet rows, but does not guarantee the entire application is deadlock-free: other rows, tables, or differently ordered queries can still introduce cycles. The locks last until commit or rollback, not just until the repository method returns.
+
+### Why does the locking query return a list?
+
+The query matches a set of wallet ids, so it can return several Wallet objects:
+
+```text
+wallet_ids = [20, 10]
+    ↓ WHERE id IN (...) + ORDER BY id + FOR UPDATE
+matching locked rows: Wallet 10, Wallet 20
+    ↓ db.scalars(stmt).all()
+collection of Wallet ORM objects
+    ↓ list(...)
+list[Wallet], ordered as [Wallet 10, Wallet 20]
+```
+
+`scalars()` exposes the Wallet objects for all result rows. `scalar()` would return only the first result and would not provide both wallets to the service. `.all()` collects the results; wrapping them in `list()` makes the return type explicit. It does not create detached copies, and returning the list does not release row locks.
+
+**Never assume `wallets[0]` is the sender.** Results are sorted by id, not by the request's roles or input order. The future service should find the sender and receiver by their ids, for example through a dictionary keyed by `wallet.id`, then validate ownership and the other rules.
+
+Missing wallet ids are omitted, so a two-wallet request may return fewer than two rows. Repeating an id does not return the same row twice. The caller must check existence and distinct ids explicitly; the list alone does not prove that a valid transfer can proceed.
+
 ### Next implementation step
 
-Review the current `Transaction` and `LedgerEntry` models against these rules, then build a `TransferService` for the first real internal transfer between two wallets. The service should coordinate validation, concurrency protection, the two entries, balance updates, and one commit/rollback boundary. A failure-path test should prove that an interrupted posting leaves no partial money movement. This is planned work, not an existing service.
+Add authenticated transaction and ledger history endpoints, define amount precision, and add repeatable PostgreSQL tests for posting, rollback, and concurrent opposite-direction transfers. Add idempotency before supporting retries. The current service is a first implementation, not a fully verified transfer API.
 
 ### Why pending is different from success
 
@@ -725,6 +829,65 @@ The service currently raises `ValueError`; routers translate that into HTTP erro
 `get_db()` creates a session for the request and closes it afterward; services decide when to commit. Closing a session is cleanup, not proof that the business operation succeeded. ORM model changes also do not update existing tables automatically: Alembic migrations do that.
 
 The current migrations create the initial tables, allow duplicate usernames, and add `token_version`. They record schema evolution, not a history of individual financial operations.
+
+### Execution review: def, async def, and the thread pool
+
+Reviewed on **October 28, 2026**. The project's SQLAlchemy `Session` is still
+synchronous; moving work to a thread does not turn it into async database I/O.
+
+| Code | Execution choice | Reason |
+| --- | --- | --- |
+| Wallet, transfer, transaction, ledger, and user endpoints | `def` | FastAPI executes synchronous endpoints in its thread pool |
+| Authentication endpoints and their orchestration methods | `async def` | They await the async Redis store |
+| Authentication SQLAlchemy work and password hashing/verification | Sync helpers awaited through `run_in_threadpool` | Prevent database waits and bcrypt work from occupying the event-loop thread |
+| Redis store and Redis health check | `async def` | The Redis client supports awaitable I/O |
+| Basic health response | `async def` | Returns a small dictionary without blocking work; no thread is needed |
+| Application lifespan | `async def` | Awaits Redis client cleanup |
+
+```mermaid
+flowchart TD
+    R["Request"] --> K{"Which endpoint?"}
+    K -->|Synchronous SQLAlchemy only| D["def endpoint"]
+    D --> W["FastAPI thread pool: service and repository"]
+    W --> DB["Worker waits for synchronous database result"]
+    K -->|Authentication with async Redis| A["async def endpoint"]
+    A --> H["await run_in_threadpool: SQLAlchemy / bcrypt helper"]
+    H --> BACK["Return to async orchestration"]
+    BACK --> REDIS["await Redis I/O on the event loop"]
+    DB --> OUT["Return response"]
+    REDIS --> OUT
+```
+
+The diagram is simplified: refresh reads Redis before loading the user, while
+logout-all revokes Redis sessions before updating the database token version.
+Each synchronous helper is awaited before another operation uses the same
+request Session. The Session must not be shared by simultaneous tasks.
+
+An ordinary `def` service called directly from `async def` does not get a worker
+automatically. The authentication service therefore offloads its synchronous
+helpers explicitly. It also serializes ORM user data in a worker because reading
+attributes expired by `commit()` can trigger another database query. The async
+orchestrator returns response-schema data after awaiting Redis.
+
+This keeps one request waiting for its own result while letting the event loop
+serve other work. Thread-pool and database-pool capacity remain finite. No
+database schema changed, so no Alembic migration is required.
+
+Verification: seven automated execution-boundary tests assert worker-thread
+database/password work, Redis awaits, route execution modes, and registration
+rollback. Live checks covered 25 authentication/endpoint scenarios plus 13
+existing-wallet/ledger/transaction scenarios. A new test user (id 5) has a
+zero-balance AED wallet; existing wallet balances remain AED 350 and AED 250.
+These tests verify behavior and execution placement, not a throughput benchmark.
+
+Run the automated tests with the project environment:
+
+```bash
+DEBUG=false .venv/bin/python -m unittest discover -s tests -v
+```
+
+References: [FastAPI execution behavior](https://fastapi.tiangolo.com/async/#path-operation-functions)
+and [SQLAlchemy's separate async API](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html).
 
 ## 10. API map: business action to current response
 

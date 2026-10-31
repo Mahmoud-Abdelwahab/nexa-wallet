@@ -4,6 +4,8 @@ from app.api.routes.health import router as health_router
 from app.api.routes.authentication import router as auth_router
 from app.api.routes.users import router as users_router
 from app.api.routes.wallet import router as wallet_router
+from app.api.routes.transfer import router as transfer_router
+from app.api.routes.transaction import router as transaction_router
 
 from app.core.config import settings
 
@@ -26,3 +28,5 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(wallet_router)
+app.include_router(transfer_router)
+app.include_router(transaction_router)

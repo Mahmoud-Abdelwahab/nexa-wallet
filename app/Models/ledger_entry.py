@@ -73,12 +73,12 @@ class LedgerEntry(Base):
     )
 
     currency: Mapped[Currency] = mapped_column(
-    SQLEnum(
-        Currency,
-        name="currency",
-    ),
-    nullable=False,
-)
+        SQLEnum(
+            Currency,
+            name="currency",
+        ),
+        nullable=False,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.now,
@@ -86,11 +86,9 @@ class LedgerEntry(Base):
     )
 
     transaction: Mapped["Transaction"] = relationship(
-    back_populates="ledger_entries",
+        back_populates="ledger_entries",
     )
 
     wallet: Mapped["Wallet"] = relationship(
-    back_populates="ledger_entries",
+        back_populates="ledger_entries",
     )
-    
-    
