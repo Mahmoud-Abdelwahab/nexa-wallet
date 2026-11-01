@@ -37,7 +37,7 @@ Balances in different currencies remain separate. The dotted arrow is planned mo
 
 A transaction answers **“What operation was requested, and what happened to it?”** A ledger entry answers **“What financial movement was recorded for this wallet?”**
 
-These are different questions. If a payment gateway rejects a future top-up, we still need a failed transaction record, but there should be no successful credit to the wallet.
+These are different questions. If a payment gateway rejects a top-up, the `topups` record can track the failed funding attempt without a linked financial transaction or any credit to the wallet.
 
 ## 3. Table relationships
 
@@ -947,3 +947,60 @@ Registration duplicates now share a message instead of naming the existing email
 or mobile. This alone does **not** prevent account enumeration: different success
 and failure outcomes can still reveal whether details are usable. Stronger
 protection requires designing contact verification and abuse controls together.
+
+## Why does wallet funding need a TopUp model?
+
+**A TopUp is specifically a request to add money to a wallet through Moyasar.**
+An internal transfer between two existing wallets does not create a TopUp.
+
+| Table | Business responsibility |
+| --- | --- |
+| `topups` | Track the wallet funding request, its Moyasar Payment ID, and its PENDING / COMPLETED / FAILED status. |
+| `transactions` | Record the financial operation inside Nexa. |
+| `ledger_entries` | Record how that financial operation affects wallet balances: DEBIT or CREDIT. |
+
+### Example: add 100 AED to a wallet
+
+Suppose Wallet A starts with 50 AED. The user requests a 100 AED top-up.
+With two decimal places for AED, `amount_minor = 10000` represents 100 AED.
+
+```text
+TopUp TU1: request to fund Wallet A with 100 AED
+    status = PENDING
+    transaction_id = None
+    Wallet A balance is still 50 AED
+                |
+                v
+    Verify the payment result and match it to TU1
+                |
+        +-------+-------+
+        |               |
+      Failed         Successful
+        |               |
+        v               v
+TopUp = FAILED     Post the financial operation once
+No wallet credit      |
+Balance = 50 AED      +--> Transaction T1: Nexa financial record
+                      +--> Ledger CREDIT: Wallet A, 100 AED, type TOP_UP
+                      +--> Wallet A balance: 50 -> 150 AED
+                      +--> TopUp TU1: COMPLETED, transaction_id = T1
+                      |
+                      v
+             Commit all posting changes together
+             Any posting failure -> roll back those changes
+```
+
+The diagram shows the intended business flow. It does not define the complete
+accounting entries: the current Transaction model requires both sender and
+receiver wallets, so the external funding/counterpart representation must be
+resolved before implementing top-up posting. A repeated payment notification
+must not credit the wallet again.
+
+`TopUp.transaction_id` is nullable because a pending or failed request may not
+have a financial transaction. Its unique constraint prevents two TopUps from
+linking to the same transaction. One linked Transaction can have multiple ledger
+entries; they explain its balance effects.
+
+**Current implementation:** the TopUp model and its migration file exist. The
+webhook currently verifies the secret, rejects live events, logs metadata, and
+acknowledges receipt. It does not yet save/process TopUps or credit wallets.

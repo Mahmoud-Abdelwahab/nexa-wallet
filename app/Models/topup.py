@@ -25,6 +25,15 @@ class TopUpStatus(str, Enum):
 
 
 class TopUp(Base):
+    """Track a wallet funding request through Moyasar, including pending/failed attempts.
+
+    topups = the funding request; transactions = the Nexa financial operation;
+    ledger_entries = the operation's effect on wallet balances.
+    Creating a TopUp alone does not credit the wallet. Once posted successfully,
+    transaction_id links this request to its financial transaction.
+    Internal wallet-to-wallet transfers do not need a TopUp record.
+    """
+
     __tablename__ = "topups"
 
     __table_args__ = (
