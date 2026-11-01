@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # This file used to read environment variables from .env file
@@ -10,6 +11,8 @@ class Settings(BaseSettings):
     # database_url: str = "postgresql+psycopg://nexa_user:nexa_password@localhost:5432/nexa_wallet"
     database_url: str = "postgresql+psycopg://nexa:nexa_password@localhost:5433/nexa_wallet_dev"
     secret_key: str
+    # Read from .env; SecretStr hides the value when settings are printed.
+    MOYASAR_WEBHOOK_SECRET: SecretStr | None = None
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     REDIS_URL: str = "redis://localhost:6379/0"
