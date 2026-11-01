@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.core.errors import BusinessError
 from app.models.transaction import Transaction
 from app.repositories.transaction_repository import TransactionRepository
 
@@ -45,6 +46,6 @@ class TransactionService:
         )
 
         if transaction is None:
-            raise ValueError("Transaction not found")
+            raise BusinessError("Transaction not found")
 
         return transaction

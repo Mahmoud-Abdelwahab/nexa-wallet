@@ -920,3 +920,30 @@ The table lists normal success and selected business errors. Schema validation c
 8. Which automated test would demonstrate the rule and its failure case?
 
 Use [PROGRESS.md](PROGRESS.md) for the implementation checklist. Update this guide whenever a new business rule is implemented or an existing decision changes, keeping the distinction between intended behavior and actual behavior explicit.
+
+## Safe API error messages
+
+Only `BusinessError` carries a message deliberately written for the client. A normal
+`ValueError` could originate in a library and contain implementation details, so
+routes must not automatically expose it. Internal failures return a generic 500.
+
+```mermaid
+flowchart TD
+    Request[API request] --> Valid{Request fields valid?}
+    Valid -->|No| Invalid[422: field and reason, without submitted input]
+    Valid -->|Yes| Service[Run service]
+    Service --> Business{Expected business failure?}
+    Business -->|Yes| Safe[Return safe message and appropriate status]
+    Business -->|No: unexpected exception| Internal[500: generic message; server retains exception]
+    Business -->|No error| Success[Return successful result]
+```
+
+Examples: `Insufficient balance` concerns the authenticated sender's own wallet,
+so it is useful. Receiver status and currency failures use `Wallet unavailable for
+this transfer`, which avoids describing another user's wallet. Missing and
+unauthorized wallet/transaction reads continue to share a not-found response.
+
+Registration duplicates now share a message instead of naming the existing email
+or mobile. This alone does **not** prevent account enumeration: different success
+and failure outcomes can still reveal whether details are usable. Stronger
+protection requires designing contact verification and abuse controls together.

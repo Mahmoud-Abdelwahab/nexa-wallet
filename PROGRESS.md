@@ -379,3 +379,27 @@ docker compose down        # Stop/remove containers; retain PostgreSQL volume
 ---
 
 _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-boundary tests, and verified authentication and history behavior against local PostgreSQL and Redis._
+
+### 2026-10-31 — API error privacy review
+
+- Added `BusinessError`: only deliberately safe business messages are returned by routes. Unexpected `ValueError`, database failures, and missing internal records return a generic JSON 500; tracebacks remain server-side. Debug responses are disabled.
+- Access-token errors no longer distinguish a missing user from malformed credentials. Refresh failures use `Invalid refresh token`.
+- Registration duplicates share one message; profile updates no longer explicitly confirm mobile registration. **This reduces message disclosure, but success/failure responses can still allow account enumeration.** Fully addressing that requires a registration/contact-verification flow change and abuse controls.
+- Missing, unauthorized, inactive receiver, and mismatched-currency transfer failures share `Wallet unavailable for this transfer`. Own-wallet balance and amount errors remain useful.
+- Validation responses retain field paths and reasons but omit submitted input and context, avoiding password/token reflection.
+- Preserved the transfer flowcharts and three-method structure. No database migration is needed for this error-handling change.
+- Validation: 22 automated tests passed, including ASGI HTTP error responses and isolated SQLite posting/rollback tests. Pyright reported zero errors for routes, services, main, and error handlers. No live user balances were changed; PostgreSQL locking/concurrency was not retested here.
+- The screenshot's APIRouter diagnostic was not reproducible with the current CLI checker. Workspace settings select `.venv` by default and exclude both environments from workspace analysis. An already-selected VS Code interpreter may need selecting `.venv/bin/python` explicitly, then `Python: Restart Language Server`.
+
+### 2026-10-31 — Live idempotency tests passed
+
+- Added opt-in `scripts/test_live_idempotency.py` for local HTTP + PostgreSQL tests.
+- Login, first transfer, identical retry and changed-amount conflict returned
+  201 / 201 / 409. Transaction 2 was posted once.
+- Three genuinely overlapping requests returned 201 with transaction 3 each.
+  Observed three PostgreSQL lock waiters before releasing the fixture row lock.
+- Each key produced one COMPLETED idempotency record, one SUCCESS transaction and
+  two ledger entries. Test wallets 7/8 ended at 300/300 AED from 500/100 fixtures.
+- Existing wallet balances were unchanged. See `TRANSFER_TEST_RESULTS.md` for the
+  full report and reproducible command. Load, connection-limit and failure testing
+  remain separate work; Moyasar top-up/webhook integration has not started.

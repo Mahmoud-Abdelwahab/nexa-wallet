@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.errors import BusinessError
 from app.database import get_db
 from app.models.user import User
 from app.schemas.ledger import LedgerEntryResponse
@@ -35,7 +36,7 @@ def create_wallet(
             currency=request.currency,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
@@ -76,7 +77,7 @@ def get_wallet(
             user_id=current_user.id,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
@@ -116,7 +117,7 @@ def get_wallet_statement(
             offset=offset,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         # Use the same 404 for missing wallets and wallets owned by others.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

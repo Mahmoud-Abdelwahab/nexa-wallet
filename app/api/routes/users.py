@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from app.core.errors import BusinessError
 from app.api.routes.dependencies import get_current_user
 from app.mappers.user_mapper import UserMapper
 from app.models.user import User
@@ -40,7 +41,7 @@ def update_me(
             user=current_user,
             request=request,
         )
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
@@ -64,7 +65,7 @@ def change_password(
             user=current_user,
             request=request,
         )
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),

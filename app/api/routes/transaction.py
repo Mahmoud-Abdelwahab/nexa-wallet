@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.errors import BusinessError
 from app.api.routes.dependencies import get_current_user
 from app.database import get_db
 from app.models.user import User
@@ -45,7 +46,7 @@ def get_transaction(
             user_id=current_user.id,
         )
 
-    except ValueError as e:
+    except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),

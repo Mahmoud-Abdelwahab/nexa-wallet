@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.core.errors import BusinessError
 from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.repositories import UserRepository
@@ -20,7 +21,7 @@ class UserService:
     ) -> User:
 
         if not request.model_fields_set:
-            raise ValueError("At least one field must be provided")
+            raise BusinessError("At least one field must be provided")
 
         if "username" in request.model_fields_set:
             if request.username is not None:
@@ -33,7 +34,7 @@ class UserService:
                )
 
                if existing_user and existing_user.id != user.id:
-                   raise ValueError("Mobile number already registered")
+                   raise BusinessError("Unable to update profile with these details")
                user.mobile = request.mobile
 
         self.db.commit()
@@ -53,13 +54,13 @@ class UserService:
             request.current_password,
             user.password_hash,
         ):
-            raise ValueError("Current password is incorrect")
+            raise BusinessError("Current password is incorrect")
 
         if request.new_password != request.confirm_password:
-            raise ValueError("New Passwords and confirm password do not match")
+            raise BusinessError("New Passwords and confirm password do not match")
 
         if request.current_password == request.new_password:
-            raise ValueError("New password cannot be the same as the current password")
+            raise BusinessError("New password cannot be the same as the current password")
         
         user.password_hash = hash_password(
             request.new_password
