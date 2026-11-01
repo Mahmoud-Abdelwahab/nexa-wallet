@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REFRESH_TOKEN_IDLE_DAYS: int = 30
     REFRESH_TOKEN_ABSOLUTE_DAYS: int = 90
-
+    MOYASAR_TOPUP_ALLOWED_CURRENCIES: str = "AED,SAR"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

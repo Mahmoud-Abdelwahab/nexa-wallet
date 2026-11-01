@@ -10,6 +10,7 @@ from app.api.routes.wallet import router as wallet_router
 from app.api.routes.transfer import router as transfer_router
 from app.api.routes.transaction import router as transaction_router
 from app.api.routes.moyasar_webhook import router as moyasar_webhook_router
+from app.api.routes.topup import router as topup_router
 
 from app.core.config import settings
 
@@ -50,3 +51,4 @@ app.include_router(wallet_router)
 app.include_router(transfer_router)
 app.include_router(transaction_router)
 app.include_router(moyasar_webhook_router)
+app.include_router(topup_router)
