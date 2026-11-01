@@ -1,4 +1,12 @@
-"""Keep internal failures and submitted secrets out of API error responses."""
+"""Keep internal failures and submitted secrets out of API error responses.
+
+main.py registers these functions with app.add_exception_handler().
+FastAPI then calls the matching function automatically when an error reaches it;
+our endpoints do not need to call these handlers themselves.
+Request validation errors get 422; unexpected unhandled errors get a generic 500.
+BusinessError is handled separately by the routes using a safe business message.
+
+"""
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError

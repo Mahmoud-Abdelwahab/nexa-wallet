@@ -27,6 +27,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Register the functions without (): we are not calling them here.
+# FastAPI calls the matching handler automatically when a request raises an error.
+# Request validation errors -> 422; unexpected unhandled errors -> generic 500.
+# Routes handle BusinessError separately and return its safe message.
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(Exception, internal_error_handler)
 
