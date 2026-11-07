@@ -9,6 +9,7 @@ dependencies = [
     "bcrypt<4.1", # this is for password hashing and verification
     "email-validator>=2.3.0", # this is for email validation
     "fastapi>=0.139.0", # this is for building the API
+    "httpx>=0.28.1",
     "passlib[bcrypt]>=1.7.4", # this is for password hashing and verification
     "psycopg[binary]>=3.3.4", # this is for connecting to PostgreSQL database
     "pydantic-settings>=2.14.2", # this is for managing the application settings and configuration
