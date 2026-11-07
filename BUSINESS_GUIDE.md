@@ -4,6 +4,8 @@ This is a learning reference for understanding what the project does, why its ru
 
 Diagrams use Mermaid; open this Markdown in a viewer with Mermaid support to see the rendered drawings. Labels and explanations are in English.
 
+For the complete six-step wallet funding design, see [Moyasar TopUp Flow](MOYASAR_TOPUP_FLOW.md): mobile request, SDK payment, durable webhook receipt, worker verification, atomic wallet credit, and final status lookup. It includes the current implementation checklist and the convention for business comments above future code steps.
+
 Reviewed against the source on **October 25, 2026**. **Implemented** means present in the code; it does not mean every scenario has an automated test. **Planned** means a business requirement or proposed design that still needs implementation. Examples involving money movement are illustrative; the API cannot execute those operations yet.
 
 ## 1. What business are we building?
@@ -1001,6 +1003,9 @@ have a financial transaction. Its unique constraint prevents two TopUps from
 linking to the same transaction. One linked Transaction can have multiple ledger
 entries; they explain its balance effects.
 
-**Current implementation:** the TopUp model and its migration file exist. The
-webhook currently verifies the secret, rejects live events, logs metadata, and
-acknowledges receipt. It does not yet save/process TopUps or credit wallets.
+**Current implementation (2026-11-07):** the TopUp model, migration, creation
+endpoint, and owner-scoped status endpoint exist. The webhook verifies the secret,
+rejects live events, and saves payment_paid events durably before acknowledgement.
+Duplicate Event IDs are skipped; other event types are explicitly ignored.
+Worker processing and wallet credit are not yet implemented. See the
+[complete TopUp flow](MOYASAR_TOPUP_FLOW.md) for the planned worker and review state.

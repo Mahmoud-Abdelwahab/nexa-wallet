@@ -403,3 +403,19 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - Existing wallet balances were unchanged. See `TRANSFER_TEST_RESULTS.md` for the
   full report and reproducible command. Load, connection-limit and failure testing
   remain separate work; Moyasar top-up/webhook integration has not started.
+
+### 2026-11-07 — Agreed Moyasar TopUp business reference
+
+- Added [Moyasar TopUp Flow](MOYASAR_TOPUP_FLOW.md) as the English reference for all six steps, with a sequence diagram, posting flow, status meanings, API field mapping, and the current implementation checklist.
+- Backend COMPLETED is the source of truth for wallet credit; SDK paid only indicates payment progress. The target design saves webhook events before acknowledgement, verifies payments through a worker, and posts once in one database transaction.
+- Durable webhook storage, worker verification/retries, atomic TopUp credit, and REVIEW_REQUIRED remain planned. The current Transaction sender/receiver requirements need an external-funding accounting decision before posting is implemented.
+- Future implementation steps must have short business explanations and flowcharts above their functions, with comments matching implemented behavior.
+- Documentation-only update; no application behavior or database schema changed in this step.
+
+### 2026-11-07 — Durable Moyasar webhook receipt
+
+- Replaced the logging-only webhook with a synchronous database-backed handler and kept the business flowchart above the function.
+- Verifies SecretStr safely, rejects live events, ignores unsupported event types, validates Payment IDs, and saves payment_paid events with Event ID deduplication.
+- Returns success only after commit for accepted events; database failures roll back. No wallet credit happens in this route.
+- Registered the event model and applied migration ee20e59308b2 locally.
+- Validation: 31 automated tests passed; PostgreSQL duplicate-receipt check passed with its test event rolled back. Worker processing remains planned.

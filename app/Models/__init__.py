@@ -4,6 +4,7 @@ from .wallet import Wallet
 from .ledger_entry import LedgerEntry
 from app.models.idempotency_record import IdempotencyRecord
 from app.models.topup import TopUp
+from app.models.moyasar_webhook_event import MoyasarWebhookEventRecord
 
 __all__ = [
     "User",
@@ -11,5 +12,6 @@ __all__ = [
     "Transaction",
     "LedgerEntry",
     "IdempotencyRecord",
-    "TopUp"   
+    "TopUp",
+    "MoyasarWebhookEventRecord",
 ]

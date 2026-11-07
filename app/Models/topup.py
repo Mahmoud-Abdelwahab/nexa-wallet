@@ -22,7 +22,7 @@ class TopUpStatus(str, Enum):
     PENDING = "PENDING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
-
+    REVIEW_REQUIRED = "REVIEW_REQUIRED" # دي معناها إن ميسر حصلت دفع، لكن في مشكلة محتاجة مراجعة، زي اختلاف المبلغ.
 
 class TopUp(Base):
     """Track a wallet funding request through Moyasar, including pending/failed attempts.
