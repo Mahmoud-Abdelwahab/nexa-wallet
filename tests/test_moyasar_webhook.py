@@ -1,66 +1,112 @@
-"""Sandbox webhook authentication and safe logging; no network or payments."""
+"""Exercise durable receipt and duplicate handling without external payments."""
 
+import inspect
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import SecretStr
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
 
 from app.api.routes.moyasar_webhook import receive_moyasar_webhook, settings
 from app.main import app
+from app.models.moyasar_webhook_event import MoyasarWebhookEventRecord
 from app.schemas.moyasar_webhook import MoyasarWebhookEvent
 
 
-class MoyasarWebhookTests(unittest.IsolatedAsyncioTestCase):
+class MoyasarWebhookTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine('sqlite:///:memory:')
+        MoyasarWebhookEventRecord.__table__.create(self.engine)
+        self.db = Session(self.engine)
+        self.addCleanup(self.engine.dispose)
+        self.addCleanup(self.db.close)
+        patcher = patch.object(settings, 'MOYASAR_WEBHOOK_SECRET', SecretStr('test-secret'))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.payment_id = str(uuid4())
+
     def event(self, **changes):
         return MoyasarWebhookEvent(**{
             'id': 'event-1', 'type': 'payment_paid', 'live': False,
             'secret_token': 'test-secret',
-            'data': {'id': 'payment-1', 'status': 'paid',
-                     'source': {'card': 'card-data-must-not-be-logged'}},
+            'data': {'id': self.payment_id, 'status': 'paid',
+                     'source': {'card': 'must-not-be-stored'}},
             **changes,
         })
 
-    async def test_valid_sandbox_event_logs_only_metadata(self):
-        with patch.object(settings, 'MOYASAR_WEBHOOK_SECRET', SecretStr('test-secret')):
-            with self.assertLogs('app.api.routes.moyasar_webhook', level='INFO') as logs:
-                result = await receive_moyasar_webhook(self.event())
+    def count(self):
+        return self.db.scalar(select(func.count()).select_from(MoyasarWebhookEventRecord))
+
+    def test_receipt_commits_only_processing_metadata(self):
+        result = receive_moyasar_webhook(self.event(), self.db)
         self.assertEqual(result, {'received': True})
-        output = ''.join(logs.output)
-        for value in ('event-1', 'payment-1', 'paid'):
-            self.assertIn(value, output)
-        for value in ('test-secret', 'card-data-must-not-be-logged', 'secret_token'):
-            self.assertNotIn(value, output)
+        # A new session can see the committed event.
+        with Session(self.engine) as reader:
+            record = reader.get(MoyasarWebhookEventRecord, 'event-1')
+            self.assertEqual(record.payment_id, self.payment_id)
+            self.assertEqual(record.event_type, 'payment_paid')
+            self.assertEqual(record.attempts, 0)
+            self.assertIsNone(record.processed_at)
+            self.assertNotIn('secret_token', record.__table__.columns)
+            self.assertNotIn('data', record.__table__.columns)
 
-    async def test_invalid_and_unicode_secrets_are_rejected(self):
-        with patch.object(settings, 'MOYASAR_WEBHOOK_SECRET', SecretStr('test-secret')):
-            for secret in ('wrong', '', 'غير صحيح'):
-                with self.subTest(secret=secret), self.assertRaises(HTTPException) as error:
-                    await receive_moyasar_webhook(self.event(secret_token=secret))
-                self.assertEqual(error.exception.status_code, 403)
+    def test_duplicate_event_does_not_reset_worker_progress(self):
+        receive_moyasar_webhook(self.event(), self.db)
+        record = self.db.get(MoyasarWebhookEventRecord, 'event-1')
+        record.attempts = 2
+        self.db.commit()
+        result = receive_moyasar_webhook(self.event(), self.db)
+        self.assertEqual(result, {'received': True})
+        self.assertEqual(self.count(), 1)
+        self.assertEqual(self.db.get(MoyasarWebhookEventRecord, 'event-1').attempts, 2)
 
-    async def test_missing_configuration_fails_closed(self):
+    def test_unsupported_event_is_ignored_without_write(self):
+        result = receive_moyasar_webhook(self.event(type='payment_failed', data={}), self.db)
+        self.assertEqual(result, {'received': True, 'ignored': True})
+        self.assertEqual(self.count(), 0)
+
+    def test_invalid_and_unicode_secrets_are_rejected(self):
+        for secret in ('wrong', '', 'غير صحيح'):
+            with self.subTest(secret=secret), self.assertRaises(HTTPException) as error:
+                receive_moyasar_webhook(self.event(secret_token=secret), self.db)
+            self.assertEqual(error.exception.status_code, 403)
+        self.assertEqual(self.count(), 0)
+
+    def test_missing_configuration_fails_closed(self):
         for secret in (None, SecretStr('')):
             with patch.object(settings, 'MOYASAR_WEBHOOK_SECRET', secret):
                 with self.assertRaises(HTTPException) as error:
-                    await receive_moyasar_webhook(self.event(secret_token=''))
+                    receive_moyasar_webhook(self.event(secret_token=''), self.db)
                 self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(self.count(), 0)
 
-    async def test_live_event_is_rejected(self):
-        with patch.object(settings, 'MOYASAR_WEBHOOK_SECRET', SecretStr('test-secret')):
-            with self.assertRaises(HTTPException) as error:
-                await receive_moyasar_webhook(self.event(live=True))
-            self.assertEqual(error.exception.status_code, 403)
+    def test_live_event_is_rejected(self):
+        with self.assertRaises(HTTPException) as error:
+            receive_moyasar_webhook(self.event(live=True), self.db)
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertEqual(self.count(), 0)
 
-    async def test_log_values_cannot_add_lines_or_dump_nested_data(self):
-        with patch.object(settings, 'MOYASAR_WEBHOOK_SECRET', SecretStr('test-secret')):
-            with self.assertLogs('app.api.routes.moyasar_webhook', level='INFO') as logs:
-                await receive_moyasar_webhook(self.event(
-                    id='event\nforged-line', data={'id': {'secret': 'private'}, 'status': ['private']},
-                ))
-        output = ''.join(logs.output)
-        self.assertNotIn('\n', output)
-        self.assertNotIn('private', output)
+    def test_invalid_payment_ids_are_422(self):
+        for data in ({}, {'id': None}, {'id': 1}, {'id': []}, {'id': {}}, {'id': 'bad'}):
+            with self.subTest(data=data), self.assertRaises(HTTPException) as error:
+                receive_moyasar_webhook(self.event(data=data), self.db)
+            self.assertEqual(error.exception.status_code, 422)
+        self.assertEqual(self.count(), 0)
 
-    def test_route_is_registered(self):
+    def test_database_failure_rolls_back_without_acknowledgement(self):
+        for method in ('execute', 'commit'):
+            with self.subTest(method=method), patch.object(
+                self.db, method, side_effect=RuntimeError('DB unavailable')
+            ), patch.object(self.db, 'rollback', wraps=self.db.rollback) as rollback:
+                with self.assertRaisesRegex(RuntimeError, 'DB unavailable'):
+                    receive_moyasar_webhook(self.event(), self.db)
+                rollback.assert_called_once()
+            self.assertEqual(self.count(), 0)
+        self.assertEqual(receive_moyasar_webhook(self.event(), self.db), {'received': True})
+
+    def test_route_is_registered_and_synchronous(self):
         self.assertIn('post', app.openapi()['paths']['/webhooks/moyasar'])
+        self.assertFalse(inspect.iscoroutinefunction(receive_moyasar_webhook))

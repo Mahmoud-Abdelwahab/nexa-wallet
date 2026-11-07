@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     secret_key: str
     # Read from .env; SecretStr hides the value when settings are printed.
     MOYASAR_WEBHOOK_SECRET: SecretStr | None = None
+    # Backend API key for fetching payments; separate from the webhook secret.
+    MOYASAR_SECRET_KEY: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     REDIS_URL: str = "redis://localhost:6379/0"
