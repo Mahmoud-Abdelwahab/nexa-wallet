@@ -1,3 +1,4 @@
+import logging
 import secrets
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from app.schemas.moyasar_webhook import MoyasarWebhookEvent
 
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+logger = logging.getLogger(__name__)
 
 
 # Business — Step 3: save the notification before acknowledging receipt.
@@ -19,6 +21,8 @@ router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 #     ↓
 # Verify secret -> reject live events
 #     ↓
+# webhook_verification? -> show the setup code in the server terminal -> 200
+#     ↓ No
 # payment_paid?
 #     ├── No  -> 200 (ignored; no event saved)
 #     └── Yes -> validate Payment ID
@@ -51,7 +55,24 @@ def receive_moyasar_webhook(
     if event.live:
         raise HTTPException(403, "Live payments not supported")
 
-    # 4. For this MVP, subscribe only to payment_paid; ignore other event types.
+    # Setup only: enter this short-lived code in the Moyasar dashboard.
+    # Log only the authenticated sandbox code, never the secret or full payload.
+    # This event is not a payment and must never reach the financial worker.
+    if event.type == "webhook_verification":
+        code = event.data.get("verification_code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            code = str(code)
+        if (
+            not isinstance(code, str)
+            or len(code) != 6
+            or not code.isascii()
+            or not code.isdigit()
+        ):
+            raise HTTPException(422, "Invalid webhook verification code")
+        logger.info("Moyasar webhook verification code: %s", code)
+        return {"received": True}
+
+    # 4. For this MVP, process only payment_paid; ignore other event types.
     if event.type != "payment_paid":
         return {"received": True, "ignored": True}
 

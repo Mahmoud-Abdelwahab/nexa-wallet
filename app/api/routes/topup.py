@@ -51,6 +51,7 @@ def create_topup(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# Mobile checks its request -> verify ownership -> return the stored status.
 @router.get(
     "/{topup_id}",
     response_model=TopUpResponse,

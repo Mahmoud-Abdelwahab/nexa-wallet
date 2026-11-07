@@ -7,6 +7,9 @@ flow; the implementation checklist below distinguishes existing code from planne
 Moyasar SDK describes payment progress; only Nexa's `COMPLETED` TopUp means that
 Nexa has committed the wallet credit.
 
+For a beginner-friendly explanation of the worker, processor, and every model, see
+[Worker and TopUp Models](MOYASAR_WORKER_GUIDE.md).
+
 ## Table responsibilities
 
 | Table | Responsibility |
@@ -212,15 +215,14 @@ Event ID prevents duplicate event storage; locking and checking TopUp completion
 prevents the same payment from being credited twice. Worker retries after a
 crash must use the same safeguards.
 
-For a mismatch, the planned `REVIEW_REQUIRED` state means **no wallet credit**
+For a mismatch, the `REVIEW_REQUIRED` state means **no wallet credit**
 and a need for investigation or a possible refund. It does not mean a refund has
 already happened.
 
-**Accounting decision still required:** the current Transaction model requires
-both a sender and receiver wallet. External funding needs an agreed counterpart
-representation or a schema change before this posting flow can be implemented.
-The CREDIT above describes the customer's wallet effect; it does not specify a
-complete counterpart accounting design.
+**Current accounting representation:** external funding uses
+`Transaction.sender_wallet_id=None` and a CREDIT entry for the receiving wallet.
+This records the customer's wallet effect; it does not define a complete
+counterpart accounting design.
 
 ## Step 6 — Mobile → Nexa Backend: check the final result
 
@@ -232,7 +234,7 @@ not-found response as a missing ID.
 | --- | --- | --- |
 | `PENDING` | Payment or backend confirmation is still in progress. | Poll for a limited period; keep a pending message if confirmation takes longer. |
 | `COMPLETED` | The wallet credit has committed. | Show wallet TopUp success and refresh the wallet balance. |
-| `REVIEW_REQUIRED` (planned) | A discrepancy needs investigation; no credit was posted. | Show a review message, not wallet TopUp success. |
+| `REVIEW_REQUIRED` | A discrepancy needs investigation; no credit was posted. | Show a review message, not wallet TopUp success. |
 | `FAILED` | A confirmed unsuccessful funding attempt. | Show failure; do not change the wallet balance. |
 
 A polling timeout does not make a payment FAILED. If the app closes, the backend
@@ -247,8 +249,8 @@ Source reviewed on **2026-11-07**; this is a code inventory, not a new integrati
 | 1 — Create TopUp | Model, migration, POST route, ownership checks, amount conversion, and PENDING persistence exist. |
 | 2 — Mobile SDK | Backend response fields exist; SDK/3DS integration is outside the Python code reviewed here. |
 | 3 — Receive webhook | Authenticated sandbox payment_paid events are saved and committed in moyasar_webhook_events before 200. Duplicate Event IDs are skipped; other event types return 200 with ignored=true without storage. |
-| 4 — Worker verification | Durable processing worker, retry handling, and payment lookup/verification are planned. |
-| 5 — Financial posting | Atomic TopUp posting and `REVIEW_REQUIRED` are planned. The current enum contains PENDING, COMPLETED, and FAILED only; adding a state requires a migration. |
+| 4 — Worker verification | Worker, scheduled HTTP/invalid-response retries, payment lookup, and payment-ID mismatch review exist. Startup rejects placeholder keys; retries still have no terminal limit. |
+| 5 — Financial posting | Processor posts transaction, ledger credit, wallet balance, TopUp completion, and event completion together. REVIEW_REQUIRED and nullable sender migrations are applied. Wallet ACTIVE status is rechecked under its row lock before posting. |
 | 6 — Status lookup | Owner-scoped GET route exists. Mobile polling and final UI handling still need integration. |
 
 ## Convention for the next code steps

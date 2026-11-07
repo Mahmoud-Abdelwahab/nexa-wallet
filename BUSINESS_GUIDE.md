@@ -952,6 +952,8 @@ protection requires designing contact verification and abuse controls together.
 
 ## Why does wallet funding need a TopUp model?
 
+See [Worker and TopUp Models](MOYASAR_WORKER_GUIDE.md) for an English walkthrough of the worker loop, processor, and each model's purpose, source, and use.
+
 **A TopUp is specifically a request to add money to a wallet through Moyasar.**
 An internal transfer between two existing wallets does not create a TopUp.
 
@@ -1007,5 +1009,5 @@ entries; they explain its balance effects.
 endpoint, and owner-scoped status endpoint exist. The webhook verifies the secret,
 rejects live events, and saves payment_paid events durably before acknowledgement.
 Duplicate Event IDs are skipped; other event types are explicitly ignored.
-Worker processing and wallet credit are not yet implemented. See the
+Worker processing and atomic wallet credit now exist; see the worker guide for the remaining review findings. See the
 [complete TopUp flow](MOYASAR_TOPUP_FLOW.md) for the planned worker and review state.

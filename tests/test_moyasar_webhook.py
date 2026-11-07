@@ -68,6 +68,37 @@ class MoyasarWebhookTests(unittest.TestCase):
         self.assertEqual(result, {'received': True, 'ignored': True})
         self.assertEqual(self.count(), 0)
 
+    def test_verification_logs_only_code_without_financial_write(self):
+        for code in ('012345', 123456):
+            with self.subTest(code=code), self.assertLogs(
+                'app.api.routes.moyasar_webhook', level='INFO'
+            ) as logs:
+                result = receive_moyasar_webhook(self.event(
+                    type='webhook_verification',
+                    data={'verification_code': code, 'extra': 'private-data'},
+                ), self.db)
+            self.assertEqual(result, {'received': True})
+            self.assertEqual(logs.records[0].getMessage(),
+                             f'Moyasar webhook verification code: {code}')
+            self.assertEqual(self.count(), 0)
+
+    def test_verification_rejects_invalid_codes_and_unauthenticated_requests(self):
+        with patch('app.api.routes.moyasar_webhook.logger.info') as log:
+            for code in (None, True, '12345', '123456\n', 'abcdef', '١٢٣٤٥٦', {}):
+                with self.subTest(code=code), self.assertRaises(HTTPException) as error:
+                    receive_moyasar_webhook(self.event(
+                        type='webhook_verification', data={'verification_code': code},
+                    ), self.db)
+                self.assertEqual(error.exception.status_code, 422)
+            with self.assertRaises(HTTPException) as error:
+                receive_moyasar_webhook(self.event(
+                    type='webhook_verification', secret_token='wrong',
+                    data={'verification_code': '123456'},
+                ), self.db)
+            self.assertEqual(error.exception.status_code, 403)
+            log.assert_not_called()
+        self.assertEqual(self.count(), 0)
+
     def test_invalid_and_unicode_secrets_are_rejected(self):
         for secret in ('wrong', '', 'غير صحيح'):
             with self.subTest(secret=secret), self.assertRaises(HTTPException) as error:

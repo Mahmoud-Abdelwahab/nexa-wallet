@@ -419,3 +419,14 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - Returns success only after commit for accepted events; database failures roll back. No wallet credit happens in this route.
 - Registered the event model and applied migration ee20e59308b2 locally.
 - Validation: 31 automated tests passed; PostgreSQL duplicate-receipt check passed with its test event rolled back. Worker processing remains planned.
+
+### 2026-11-07 — English worker reference and TopUp processing fixes
+
+- Standardized Moyasar/TopUp code comments and flowcharts in English. Added purpose/source/use hints for every related ORM model, Pydantic schema, and TopUpStatus.
+- Added [Worker and TopUp Models](MOYASAR_WORKER_GUIDE.md): polling, query breakdown, backoff arithmetic, delivery versus processing retries, atomic commits, and crash recovery.
+- Recheck ACTIVE wallet status under lock; inactive/suspended wallets go to review without credit.
+- Normalize invalid payment JSON/schema responses into a safe retryable error; validate payment field types strictly so malformed responses do not block the oldest-event queue.
+- Payment ID mismatches review the expected TopUp, without modifying another TopUp or reopening a completed credit.
+- Fail worker startup for missing/placeholder/non-test API keys. A real test key still needs configuring locally.
+- Validation: 48 automated tests passed, targeted Pyright check passed, and two-worker PostgreSQL contention test passed in an isolated schema with mocked payment responses. Added an opt-in concurrency script; no live user balances changed.
+- Deferred: claim/lease design to avoid holding event locks across HTTP, retry limits/alerts, and real provider integration testing.

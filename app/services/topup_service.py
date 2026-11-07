@@ -48,6 +48,8 @@ class TopUpService:
         self.topup_repository = TopUpRepository(db)
         self.wallet_repository = WalletRepository(db)
 
+    # Funding request -> validate wallet/amount -> save PENDING -> return payment details.
+    # This starts funding; the processor changes the balance later after verifying payment.
     def create_topup(
         self,
         user_id: int,
@@ -108,6 +110,7 @@ class TopUpService:
             self.db.rollback()
             raise
 
+    # Return only the owner's TopUp so the mobile can check its current status.
     def get_topup(
         self,
         topup_id: UUID,

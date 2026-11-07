@@ -12,6 +12,7 @@ class TopUpRepository:
         self.db = db
 
     def create(self, topup: TopUp) -> TopUp:
+        # Add and flush the request; the service owns the commit.
         self.db.add(topup)
         self.db.flush()
         return topup
@@ -22,6 +23,7 @@ class TopUpRepository:
         user_id: int,
     ) -> TopUp | None:
 
+        # Match both request ID and owner so users cannot read another user's TopUp.
         stmt = select(TopUp).where(
             TopUp.id == topup_id,
             TopUp.user_id == user_id,
@@ -29,7 +31,7 @@ class TopUpRepository:
 
         return self.db.scalar(stmt)
 
-# we need this later when the webhook arrives to identify the TopUp associated with the payment.
+    # Find the funding request linked to this payment ID.
     def get_by_payment_id(
         self,
         payment_id: str,
