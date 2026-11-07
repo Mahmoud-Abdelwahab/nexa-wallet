@@ -1,72 +1,85 @@
-import json
-import logging
 import secrets
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.database import get_db
+from app.models.moyasar_webhook_event import MoyasarWebhookEventRecord
 from app.schemas.moyasar_webhook import MoyasarWebhookEvent
 
 
-router = APIRouter(
-    prefix="/webhooks",
-    tags=["Webhooks"],
-)
-
-logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
 
-@router.post(
-    "/moyasar",
-    status_code=status.HTTP_200_OK,
-)
-# Receive event -> verify secret -> reject live mode -> log safe fields -> 200.
-# Sandbox connectivity test only; this flow does not save events or credit wallets.
-async def receive_moyasar_webhook(
+# Business — Step 3: save the notification before acknowledging receipt.
+# POST /webhooks/moyasar
+#     ↓
+# Verify secret -> reject live events
+#     ↓
+# payment_paid?
+#     ├── No  -> 200 (ignored; no event saved)
+#     └── Yes -> validate Payment ID
+#                    ↓
+#              INSERT event (duplicate Event ID -> skip)
+#                    ↓
+#                  COMMIT -> 200 (safely received)
+#                    └── DB failure -> ROLLBACK -> error, not 200
+# A separate worker will verify payment and credit once; this route only saves it.
+# Use def with our sync Session so FastAPI runs the endpoint in its thread pool.
+@router.post("/moyasar", status_code=status.HTTP_200_OK)
+def receive_moyasar_webhook(
     event: MoyasarWebhookEvent,
+    db: Session = Depends(get_db),
 ):
-    # 1. Fail closed if the server has no webhook secret configured.
+    # 1. Reject requests if the server secret is missing or empty.
     configured_secret = settings.MOYASAR_WEBHOOK_SECRET
     if configured_secret is None or not configured_secret.get_secret_value():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Webhook is not configured",
-        )
+        raise HTTPException(503, "Webhook is not configured")
 
-    # 2. Unwrap SecretStr only for comparison; never print the secret.
-    # compare_digest avoids content-based early exits used by normal equality.
-    # UTF-8 bytes also prevent non-ASCII input from causing a comparison error.
+    # 2. Unwrap SecretStr; compare bytes to also handle non-ASCII input safely.
+    # compare_digest avoids content-based early exits; never log either secret.
     if not secrets.compare_digest(
         event.secret_token.encode("utf-8"),
         configured_secret.get_secret_value().encode("utf-8"),
     ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid webhook secret",
-        )
+        raise HTTPException(403, "Invalid webhook secret")
 
-    # 3. Reject live events during sandbox development.
+    # 3. Sandbox only: live payments are not supported yet.
     if event.live:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Live payments are not accepted",
-        )
+        raise HTTPException(403, "Live payments not supported")
 
-    # 4. Log selected metadata only, never the full payload, card data, or secret.
-    payment_id = event.data.get("id")
-    payment_status = event.data.get("status")
+    # 4. For this MVP, subscribe only to payment_paid; ignore other event types.
+    if event.type != "payment_paid":
+        return {"received": True, "ignored": True}
 
-    # Ignore nested values and escape newlines so input cannot forge log lines.
-    metadata = {
-        "event_id": event.id[:128],
-        "type": event.type[:128],
-        "payment_id": payment_id[:128] if isinstance(payment_id, str) else None,
-        "status": payment_status[:64] if isinstance(payment_status, str) else None,
-    }
-    logger.info("+++++++++++++++=========🚀===========+++++++++++++++++++")
-    logger.info("Moyasar webhook %s", json.dumps(metadata))
+    # 5. Validate and normalize the Payment ID before saving it for the worker.
+    # UUID expects a string here; reject lists, numbers, and objects with 422.
+    raw_payment_id = event.data.get("id")
+    if not isinstance(raw_payment_id, str):
+        raise HTTPException(422, "Invalid payment ID")
+    try:
+        payment_id = str(UUID(raw_payment_id))
+    except ValueError:
+        raise HTTPException(422, "Invalid payment ID")
 
-    # 5. Test-only acknowledgement: received does NOT mean saved or paid.
-    # Production: durably save/deduplicate the event BEFORE returning 200.
-    # Logging alone can lose an event if the server crashes after this response.
+    # 6. The Event ID primary key deduplicates notifications, even concurrently.
+    # Store only processing metadata, not the secret or card details.
+    stmt = (
+        insert(MoyasarWebhookEventRecord)
+        .values(id=event.id, payment_id=payment_id, event_type=event.type)
+        .on_conflict_do_nothing(index_elements=["id"])
+    )
+
+    # 7. Acknowledge only after durable commit; failures must remain retryable.
+    try:
+        db.execute(stmt)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    # Received means saved (or already saved), not that the wallet was credited.
     return {"received": True}

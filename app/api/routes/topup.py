@@ -15,7 +15,16 @@ router = APIRouter(
     tags=["Top Ups"],
 )
 
-
+"""
+the client will use the returned givenID to create a payment request to Moyasar, for example in Swift:
+let request = try PaymentRequest(
+    apiKey: "pk_test_...",
+    amount: topUp.amountMinor,
+    currency: topUp.currency,
+    description: "Nexa Wallet Top Up",
+    givenID: topUp.moyasarPaymentId
+)
+"""
 @router.post(
     "",
     response_model=TopUpResponse,
