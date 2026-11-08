@@ -6,7 +6,8 @@ SQLite verifies balances/rollback here; real PostgreSQL locks need integration t
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -392,3 +393,126 @@ class TopUpProcessorTests(unittest.TestCase):
         self.expire_lease()
         self.process()
         self.assertEqual(self.snapshot(), (Decimal('150'), TopUpStatus.COMPLETED, 1, 1))
+
+
+# Beginner pytest examples: fake records and a mocked Session, no real DB or HTTP.
+
+def make_data(topup_status=TopUpStatus.PENDING):
+    # Arrange: prepare fake database records
+    event = SimpleNamespace(
+        id="E100",
+        payment_id="P123",
+        attempts=1,
+        processed_at=None,
+        support_alert_at=None,
+        last_error=None,
+    )
+
+    topup = SimpleNamespace(
+        id="T100",
+        moyasar_payment_id="P123",
+        wallet_id=1,
+        user_id=1,
+        amount_minor=5000,
+        currency=Currency.AED,
+        status=topup_status,
+        transaction_id=None,
+    )
+
+    wallet = SimpleNamespace(
+        id=1,
+        user_id=1,
+        balance=Decimal("100.00"),
+        currency=Currency.AED,
+        status=WalletStatus.ACTIVE,
+    )
+
+    job = SimpleNamespace(
+        event_id="E100",
+        payment_id="P123",
+        attempt=1,
+    )
+
+    payment = SimpleNamespace(
+        id="P123",
+        status="paid",
+        amount=5000,
+        currency="AED",
+    )
+
+    db = MagicMock()
+
+    return db, event, topup, wallet, job, payment
+
+
+def test_successful_topup():
+    db, event, topup, wallet, job, payment = make_data()
+    # Each scalar() call receives the next fake result: Event -> TopUp -> Wallet.
+    # This tests the processor's decisions, not real SQL queries or database locks.
+    db.scalar.side_effect = [event, topup, wallet]
+
+    # Simulate database-generated transaction ID after flush
+    def fake_flush():
+        transaction = db.add.call_args_list[0].args[0]
+        transaction.id = 500
+
+    db.flush.side_effect = fake_flush
+
+    # Act
+    processor = TopUpPaymentProcessor(db)
+    processor.finish_payment(job, payment)
+
+    # Assert
+    assert wallet.balance == Decimal("150.00")
+    assert topup.status == TopUpStatus.COMPLETED
+    assert topup.transaction_id == 500
+    assert event.processed_at is not None
+    assert db.add.call_count == 2
+    transaction = db.add.call_args_list[0].args[0]
+    ledger = db.add.call_args_list[1].args[0]
+    assert isinstance(transaction, Transaction)
+    assert transaction.amount == Decimal("50.00")
+    assert transaction.status.value == "SUCCESS"
+    assert isinstance(ledger, LedgerEntry)
+    assert ledger.transaction_id == 500
+    assert ledger.wallet_id == wallet.id
+    assert ledger.amount == Decimal("50.00")
+    assert ledger.direction.value == "CREDIT"
+    assert ledger.entry_type.value == "TOP_UP"
+    db.commit.assert_not_called()  # The worker owns the final commit.
+
+
+def test_duplicate_payment():
+    # A previous attempt already completed this TopUp; no new credit is allowed.
+    db, event, topup, wallet, job, payment = make_data(
+        TopUpStatus.COMPLETED
+    )
+
+    db.scalar.side_effect = [event, topup]
+
+    processor = TopUpPaymentProcessor(db)
+    processor.finish_payment(job, payment)
+
+    assert wallet.balance == Decimal("100.00")
+    assert topup.status == TopUpStatus.COMPLETED
+    assert event.processed_at is not None
+    db.add.assert_not_called()
+
+
+def test_amount_mismatch():
+    db, event, topup, wallet, job, payment = make_data()
+
+    # Nexa expects 5000 fils, Moyasar returns 1000
+    payment.amount = 1000
+
+    db.scalar.side_effect = [event, topup]
+
+    processor = TopUpPaymentProcessor(db)
+    processor.finish_payment(job, payment)
+
+    assert topup.status == TopUpStatus.REVIEW_REQUIRED
+    assert wallet.balance == Decimal("100.00")
+    assert event.support_alert_at is not None
+    assert event.processed_at is not None
+    assert event.last_error == "Amount or currency mismatch"
+    db.add.assert_not_called()

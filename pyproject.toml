@@ -19,3 +19,8 @@ dependencies = [
     "sqlalchemy>=2.0.51", # this is for ORM and database management
     "uvicorn>=0.51.0", # this is for running the FastAPI application
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
