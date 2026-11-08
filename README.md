@@ -1,179 +1,286 @@
 # Nexa Wallet API
 
-A digital wallet API built with FastAPI, SQLAlchemy, PostgreSQL, and Redis.
+A learning project for a wallet backend built with FastAPI, SQLAlchemy, PostgreSQL
+and Redis. It includes authentication, wallet transfers, transaction/ledger history,
+and Moyasar sandbox top-ups with idempotency, background processing and reconciliation.
 
-For the business rules, table relationships, workflow examples, and reasons behind the design, read [Business and Design Guide](BUSINESS_GUIDE.md). For completed work and next steps, read [Progress Log](PROGRESS.md).
+## Run with Docker (no local Python required)
 
-For automatic Codex PR reviews, see [setup and behavior](.github/codex/README.md). Activation requires the `OPENAI_API_KEY` GitHub Actions secret.
+Install and start **Docker Desktop** (or Docker Engine with the Compose plugin).
+Clone/download this repository, then open a terminal in the folder containing
+`compose.yaml`. Run the following commands from that folder.
 
-## Features
+### 1. Generate your local settings
 
-- User registration and login with JWT access tokens
-- Opaque refresh tokens stored and rotated in Redis
-- Per-device logout and logout-all revocation
-- Token-version invalidation for all old access tokens
-- Wallet creation and transaction domain models
-- PostgreSQL persistence with Alembic migrations
-
-## Tech Stack
-
-- **FastAPI** - HTTP API framework
-- **SQLAlchemy 2.0** - ORM and database access
-- **PostgreSQL 16** - Primary database
-- **Redis 7** - Refresh-session storage and atomic token rotation
-- **Pydantic** - Request and response validation
-- **python-jose** - JWT signing and validation
-- **Passlib + bcrypt** - Password hashing
-- **Uvicorn** - ASGI server
-- **Docker Compose** - Local PostgreSQL and Redis services
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.13+
-- Docker and Docker Compose
-- uv (recommended) or pip
-
-### Installation
-
-1. Create and activate a virtual environment:
+macOS / Linux:
 
 ```bash
-uv venv
-source .venv/bin/activate
+docker run --rm --user "$(id -u):$(id -g)" -v "${PWD}:/workspace" -w /workspace python:3.14-slim python scripts/setup_docker_env.py
 ```
 
-2. Install the project:
+Windows PowerShell:
+
+```powershell
+docker run --rm -v "${PWD}:/workspace" -w /workspace python:3.14-slim python scripts/setup_docker_env.py
+```
+
+This creates `.env.docker` with random JWT and webhook secrets. Running it again
+leaves the existing file unchanged. It does not change your local Python `.env`.
+The Unix command creates the file as your own user, so you can edit it afterward.
+
+Share the repository and `.env.docker.example`, **not** `.env` or `.env.docker`.
+The real environment files and host virtual environments are excluded from the image.
+
+### 2. Build and start
 
 ```bash
-uv pip install -e .
+docker compose --env-file .env.docker up -d --build
 ```
 
-3. Configure environment variables in `.env`. At minimum, set `SECRET_KEY`.
+The first build downloads images and dependencies. Compose starts PostgreSQL and
+Redis, waits for PostgreSQL readiness, runs `alembic upgrade head`, then starts the
+API after migrations finish successfully. You do not need to run migrations manually
+on first startup. `migrate` showing **Exited (0)** is normal: it is a one-time job.
 
-4. Start PostgreSQL and Redis:
+### 3. Open the API
+
+- Swagger / interactive requests: <http://localhost:8000/docs>
+- ReDoc: <http://localhost:8000/redoc>
+- Health: <http://localhost:8000/health>
 
 ```bash
-docker compose up -d
+docker compose --env-file .env.docker ps -a
+docker compose --env-file .env.docker logs -f api
 ```
 
-5. Apply database migrations:
+Register a new account using `POST /auth/register`, then log in. The default AED
+wallet starts at zero; a new installation has no sample users or funded wallets.
+Use the schemas shown in Swagger for the current request fields. Transfers and
+TopUp creation require an `Idempotency-Key` header: reuse it for retries of the same
+request, and choose a new key for a new operation.
+
+The basic API works without a Moyasar key. Real sandbox payment verification needs
+your own provider key and the optional payment workers below.
+
+## Enable Moyasar sandbox payments
+
+Edit `.env.docker` locally:
+
+```ini
+MOYASAR_SECRET_KEY=sk_test_YOUR_REAL_KEY
+```
+
+Keep the generated `MOYASAR_WEBHOOK_SECRET` and use that same value in Moyasar's
+webhook settings. These are different secrets. The payment worker rejects the
+placeholder key and live keys; a valid sandbox key must come from your account.
+
+Start the full stack, including both workers:
 
 ```bash
-alembic upgrade head
+docker compose --env-file .env.docker --profile payments up -d --build
 ```
-
-6. Start the API:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-The API will be available at `http://localhost:8000`.
-
-### API Documentation
-
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-## Project Structure
 
 ```text
-nexa-wallet/
-├── app/
-│   ├── api/                 # Authentication, user, and health routes
-│   ├── core/                # Configuration, security, and Redis client
-│   ├── infrastructure/      # Redis store implementation
-│   ├── mappers/             # ORM-to-response mapping
-│   ├── models/              # SQLAlchemy models
-│   ├── repositories/        # Database access layer
-│   ├── schemas/             # Pydantic request/response schemas
-│   ├── services/            # Authentication and user business logic
-│   ├── database.py          # Engine, session factory, and DB dependency
-│   └── main.py              # FastAPI application
-├── alembic/                 # Database migrations
-├── compose.yaml             # PostgreSQL and Redis services
-├── pyproject.toml
-├── PROGRESS.md
-└── README.md
+Moyasar webhook endpoint ----+
+                            v
+Reconciliation producer -> PostgreSQL event queue -> Moyasar consumer
+(every cycle + 60s sleep)                            claim -> fetch -> finalize
+                                                            |
+                                                            v
+                                               verify + credit wallet once
 ```
 
-## API Endpoints
+- `moyasar-worker`: checks payments, schedules retries and posts verified credits.
+- `reconciliation-worker`: queues recovery work for PENDING TopUps at least five
+  minutes old with no unfinished event. It does not itself credit money.
+- PostgreSQL and Redis data live in named volumes and survive a normal shutdown.
 
-### Authentication
+Moyasar cannot reach your computer's `localhost`. For webhooks, configure a public
+HTTPS endpoint pointing to **`POST /webhooks/moyasar`**. Subscribe to `payment_paid`
+and `payment_failed`. Keep any local tunnel running and update Moyasar if its URL
+changes. Webhook verification codes appear in the API logs.
 
-- `POST /auth/register` - Register a user and create the default AED wallet
-- `POST /auth/login` - Issue an access token and refresh token
-- `POST /auth/refresh` - Rotate a refresh token and issue new tokens
-- `POST /auth/logout` - Revoke the current device session
-- `POST /auth/logout-all` - Revoke all refresh sessions and invalidate old access tokens
+Optional webhook-only Cloudflare tunnel, in two separate host terminals (requires
+local Python and Cloudflare's `cloudflared` command):
 
-### Users
-
-- `GET /users/me` - Get the authenticated user
-- `PATCH /users/me` - Update the authenticated user's profile
-- `POST /users/me/change-password` - Change password and invalidate old access tokens
-
-### Health
-
-- `GET /health` - Health check endpoint
-
-## Refresh Token Design
-
-Refresh tokens are random opaque values. The raw token is returned to the client, but only its SHA-256 hash is stored in Redis.
-
-```text
-refresh_session:{token_hash}
-    -> session JSON with user_id, session_id, and absolute_expires_at
-    -> idle TTL: 30 days
-
-user_refresh_sessions:{user_id}
-    -> Redis Set containing all refresh-token hashes for that user
+```bash
+# Terminal 1: forward only POST /webhooks/moyasar to the Docker API on port 8000.
+python3 scripts/run_webhook_proxy.py
 ```
 
-During rotation, Redis atomically removes the old session and hash, then creates the new session and adds the new hash. The old refresh token is single-use. `logout-all` uses a separate Lua script and is atomic with rotation, so it cannot leave an orphaned rotated session.
+The proxy listens on `127.0.0.1:8001`; the API itself stays bound to localhost.
 
-## Environment Variables
+```bash
+# Terminal 2: expose only the proxy.
+cloudflared tunnel --url http://127.0.0.1:8001
+```
 
-| Variable | Description | Default |
+Set Moyasar's URL to `https://YOUR-TUNNEL.trycloudflare.com/webhooks/moyasar`.
+The proxy example assumes `API_PORT=8000`. See the [TopUp flow](MOYASAR_TOPUP_FLOW.md)
+for creating a payment with the returned Payment ID, amount and currency. Docker
+startup does not create a payment or run a mobile checkout automatically.
+
+## Logs, support alerts and stopping
+
+```bash
+# API requests, exceptions and webhook verification codes
+docker compose --env-file .env.docker logs -f api
+
+# Payment processing and reconciliation (after enabling the payments profile)
+docker compose --env-file .env.docker logs -f moyasar-worker reconciliation-worker
+
+# Read durable support alerts; this does not retry or change payments
+docker compose --env-file .env.docker exec api python scripts/list_payment_support_alerts.py --limit 50
+
+# Stop the full stack, preserving saved data
+docker compose --env-file .env.docker --profile payments down
+```
+
+`Ctrl+C` while following `logs -f` closes the log viewer, not the containers.
+`docker compose down -v` also deletes volumes and their data; do not use it to
+perform a normal stop.
+
+After code changes, rebuild with `up -d --build`. After changing `.env.docker`, run
+`up -d` to recreate affected containers; `restart` alone does not reload environment
+variables. Include `--profile payments` if you use the workers. Do not run old host
+workers against the same database alongside the new container workers.
+
+## Run automated tests inside Docker
+
+```bash
+docker compose --env-file .env.docker build tests
+docker compose --env-file .env.docker run --rm --no-deps tests
+```
+
+These tests use isolated SQLite data and simulated provider responses. They do not
+create real payments or use your Moyasar key. The runtime image excludes pytest;
+the separate test target installs the locked development dependencies.
+
+Run only the beginner example:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps tests python -m pytest tests/test_amount.py -v -o cache_dir=/tmp/pytest-cache
+```
+
+Real PostgreSQL locking tests are separate; see `scripts/test_topup_concurrency.py`
+and [test results](TOPUP_TEST_RESULTS.md). SQLite tests do not prove row-lock behavior.
+
+## Ports and troubleshooting
+
+| Service | On your computer | Inside Compose |
 | --- | --- | --- |
-| `APP_NAME` | Application name | `Nexa Wallet` |
-| `DEBUG` | Debug mode | `True` |
-| `DATABASE_URL` | PostgreSQL connection URL | `postgresql+psycopg://nexa:nexa_password@localhost:5433/nexa_wallet_dev` |
-| `SECRET_KEY` | JWT signing secret | Required |
-| `ALGORITHM` | JWT algorithm | `HS256` |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access-token lifetime | `30` |
-| `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
-| `REFRESH_TOKEN_IDLE_DAYS` | Refresh session idle lifetime | `30` |
-| `REFRESH_TOKEN_ABSOLUTE_DAYS` | Refresh session absolute lifetime | `90` |
+| API | `127.0.0.1:8000` | `api:8000` |
+| PostgreSQL | `127.0.0.1:5433` | `postgres:5432` |
+| Redis | `127.0.0.1:6379` | `redis:6379` |
 
-## Verification
+- **Port already in use:** stop your old local API, or change `API_PORT` in
+  `.env.docker` (for example `8002`). The same applies to `POSTGRES_PORT` and
+  `REDIS_PORT`. Open the corresponding port in your browser.
+- **Existing Docker database:** the default project name follows the directory
+  name. Using this repository in the same directory reuses its existing
+  `postgres_data` volume. Use a different `-p PROJECT_NAME` plus different host
+  ports for an isolated copy, and use that project name on every Compose command.
+- **API does not start:** inspect `docker compose --env-file .env.docker logs migrate api`.
+  A migration failure blocks API/worker startup; fix it instead of deleting data.
+- **Worker exits:** check its logs and the real sandbox key. The worker cannot
+  generate a valid provider credential.
+- **TopUp stays PENDING:** inspect both worker logs and verify the public webhook
+  URL. `404`/waiting payments remain pending and are checked later. Only a verified
+  matching paid payment can credit the wallet.
+- **Changed code has no effect:** images contain a copy of the code; rebuild them.
+  This setup does not bind-mount your source or enable auto-reload.
 
-The authentication flow has been verified with real HTTP calls against FastAPI, PostgreSQL, and Redis. Verified scenarios include:
+This Compose stack is for local learning and sandbox demos. Database credentials
+are local-development defaults and published ports are bound to loopback. Public
+production hosting, TLS, backups and support notification delivery are separate work.
 
-- Registration and login
-- Redis session keys, user session Sets, TTL, and absolute expiry
-- Protected endpoint access and invalid access tokens
-- Refresh rotation and old-token reuse rejection
-- Per-device logout and multiple-device behavior
-- Logout-all and `token_version` invalidation
-- Concurrent refresh protection: one success and the remaining requests rejected
-- Stale Redis session-index cleanup
+## Local Python development (optional)
 
-## Local Services
-
-```bash
-docker compose up -d       # Start PostgreSQL and Redis
-docker compose down        # Stop services and preserve volumes
-docker compose down -v     # Stop services and remove database volumes
-```
-
-## Development Commands
+Python 3.14 and `uv` are used by the Docker build. To work outside Docker:
 
 ```bash
-alembic upgrade head
-pytest
-ruff format .
-ruff check .
+uv sync --locked
 ```
+
+Use a local `.env` containing `SECRET_KEY`, `MOYASAR_SECRET_KEY`, optional
+`MOYASAR_WEBHOOK_SECRET`, `DATABASE_URL` and `REDIS_URL`. Local URLs use `localhost`
+and the published host ports; container URLs use `postgres` and `redis`.
+Start only the database services if the API will run on your host:
+
+```bash
+docker compose --env-file .env.docker up -d postgres redis
+DEBUG=false .venv/bin/python -m alembic upgrade head
+DEBUG=false .venv/bin/python -m uvicorn app.main:app --reload
+```
+
+## What do Dockerfile and compose.yaml do?
+
+| File | Responsibility |
+| --- | --- |
+| `Dockerfile` | Builds the application's image: Python, locked dependencies, source code and the default start command. |
+| `compose.yaml` | Runs the whole stack: API, PostgreSQL, Redis, migrations and optional workers, with their network, volumes and startup order. |
+
+```text
+Dockerfile -> build -> application image -> API / worker containers
+compose.yaml -> connects those containers to PostgreSQL and Redis
+```
+
+## Test it as a new user
+
+1. Commit and push your changes, then clone the repository into a **new folder**.
+   Do not copy your existing `.env`, `.env.docker` or `.venv` into it.
+2. Follow the environment-generation command above. If testing beside another
+   running copy, set `API_PORT=18081`, `POSTGRES_PORT=15434`, `REDIS_PORT=16381`
+   in the new `.env.docker` and use a distinct Compose project name.
+3. Start the isolated copy and inspect its status:
+
+```bash
+docker compose --env-file .env.docker -p nexa-fresh-check up -d --build
+docker compose --env-file .env.docker -p nexa-fresh-check ps -a
+```
+
+4. Open `http://localhost:18081/docs` with the alternate ports above. Check health,
+   register, log in, and list the new user's zero-balance wallet. `migrate` should
+   show Exited (0); API, PostgreSQL and Redis should be healthy.
+5. Run the automated tests from that copy:
+
+```bash
+docker compose --env-file .env.docker -p nexa-fresh-check build tests
+docker compose --env-file .env.docker -p nexa-fresh-check run --rm --no-deps tests
+docker compose --env-file .env.docker -p nexa-fresh-check down
+```
+
+The distinct project name creates separate volumes. Reusing that name later also
+reuses its data; choose a new project name to test first startup again. For a target
+Windows or Intel/AMD device, repeat the steps there too: a successful local Linux
+container test does not itself test every host OS or CPU architecture.
+
+## Docker verification
+
+Validated on 2026-11-08 in an isolated Docker project: fresh PostgreSQL migrations,
+API health/docs, account registration, login, zero-balance wallet lookup and Redis
+refresh-token rotation. Both workers started against an empty queue using dummy
+sandbox-shaped credentials; this was not a real Moyasar payment test.
+The Linux test container passed 79 tests (two dependency deprecation warnings).
+Existing local databases and payment credentials were not used.
+
+## API and learning references
+
+| Area | Main routes |
+| --- | --- |
+| Authentication | `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/logout-all` |
+| Users | `/users/me`, `/users/me/change-password` |
+| Wallets | `/wallets`, `/wallets/{id}`, `/wallets/{id}/ledger` |
+| Transfers | `POST /transfers` |
+| Transactions | `GET /transactions`, `GET /transactions/{id}` |
+| TopUps | `POST /topups`, `GET /topups/{id}` |
+| Webhooks | `POST /webhooks/moyasar` |
+
+- [Business rules and table relationships](BUSINESS_GUIDE.md)
+- [Moyasar TopUp flow](MOYASAR_TOPUP_FLOW.md)
+- [Worker, retries, leases and support alerts](MOYASAR_WORKER_GUIDE.md)
+- [Reconciliation](RECONCILIATION_GUIDE.md)
+- [Test results](TOPUP_TEST_RESULTS.md) and [progress log](PROGRESS.md)
+
+Implementation references: [Compose startup order](https://docs.docker.com/compose/how-tos/startup-order/)
+and [locked uv dependencies in Docker](https://docs.astral.sh/uv/guides/integration/docker/).

@@ -1,0 +1,15 @@
+.git
+.github
+.venv*
+.env*
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.vscode
+.DS_Store
+.agents
+.codex
+.aws
+build
+dist
+*.egg-info
