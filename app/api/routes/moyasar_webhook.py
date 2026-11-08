@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 #     ↓
 # webhook_verification? -> show the setup code in the server terminal -> 200
 #     ↓ No
-# payment_paid?
+# payment_paid or payment_failed?
 #     ├── No  -> 200 (ignored; no event saved)
 #     └── Yes -> validate Payment ID
 #                    ↓
@@ -72,8 +72,9 @@ def receive_moyasar_webhook(
         logger.info("Moyasar webhook verification code: %s", code)
         return {"received": True}
 
-    # 4. For this MVP, process only payment_paid; ignore other event types.
-    if event.type != "payment_paid":
+    # 4. Queue paid/failed notifications; verify the actual status with Moyasar first.
+    # The webhook payload alone cannot authorize credit or declare a payment failed.
+    if event.type not in ("payment_paid", "payment_failed"):
         return {"received": True, "ignored": True}
 
     # 5. Validate and normalize the Payment ID before saving it for the worker.

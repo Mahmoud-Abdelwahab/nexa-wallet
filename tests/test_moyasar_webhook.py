@@ -64,9 +64,17 @@ class MoyasarWebhookTests(unittest.TestCase):
         self.assertEqual(self.db.get(MoyasarWebhookEventRecord, 'event-1').attempts, 2)
 
     def test_unsupported_event_is_ignored_without_write(self):
-        result = receive_moyasar_webhook(self.event(type='payment_failed', data={}), self.db)
+        result = receive_moyasar_webhook(self.event(type='payment_refunded', data={}), self.db)
         self.assertEqual(result, {'received': True, 'ignored': True})
         self.assertEqual(self.count(), 0)
+
+    def test_failed_notification_is_queued_for_provider_verification(self):
+        result = receive_moyasar_webhook(self.event(type='payment_failed'), self.db)
+        self.assertEqual(result, {'received': True})
+        record = self.db.get(MoyasarWebhookEventRecord, 'event-1')
+        self.assertEqual(record.event_type, 'payment_failed')
+        self.assertIsNone(record.processed_at)
+        self.assertIsNone(record.support_alert_at)
 
     def test_verification_logs_only_code_without_financial_write(self):
         for code in ('012345', 123456):

@@ -273,22 +273,22 @@ continues processing. When the app opens again, it fetches the latest TopUp stat
 
 ## Current implementation and next steps
 
-Source reviewed on **2026-11-07**; this is a code inventory, not a new integration test.
+Source reviewed on **2026-11-08**; this is a code inventory, not a new integration test.
 
 | Step | Current state |
 | --- | --- |
 | 1 — Create TopUp | Model, migration, POST route, ownership checks, amount conversion, and PENDING persistence exist. |
 | 2 — Mobile SDK | Backend response fields exist; SDK/3DS integration is outside the Python code reviewed here. |
-| 3 — Receive webhook | Authenticated sandbox payment_paid events are saved and committed in moyasar_webhook_events before 200. Duplicate Event IDs are skipped; other event types return 200 with ignored=true without storage. |
-| 4 — Worker verification | Worker, scheduled HTTP/invalid-response retries, payment lookup, and payment-ID mismatch review exist. Startup rejects placeholder keys; retries still have no terminal limit. |
+| 3 — Receive webhook | Authenticated sandbox payment_paid/payment_failed events are committed before 200. Duplicate IDs are skipped; verification codes are handled separately; unsupported types are ignored. |
+| 4 — Worker verification | Claim/60-second lease, HTTP lookup outside DB transactions, fenced finalization, age-based waiting checks, bounded fast retries and ongoing slow checks, FAILED handling and durable support alerts are implemented. |
 | 5 — Financial posting | Processor posts transaction, ledger credit, wallet balance, TopUp completion, and event completion together. REVIEW_REQUIRED and nullable sender migrations are applied. Wallet ACTIVE status is rechecked under its row lock before posting. |
 | 6 — Status lookup | Owner-scoped GET route exists. Mobile polling and final UI handling still need integration. |
 
 ## Convention for the next code steps
 
-Planned next feature: [TopUp reconciliation](RECONCILIATION_GUIDE.md). Periodically
-check old PENDING requests to recover paid payments whose webhook was never saved,
-using the same financial posting logic. This worker is not implemented yet.
+The [reconciliation producer](RECONCILIATION_GUIDE.md) queues missing work for old
+PENDING TopUps. The existing Moyasar worker consumes these events using the same
+claim/fetch/finalize logic; see [worker guide](MOYASAR_WORKER_GUIDE.md).
 
 For every implementation step, place a short **English business explanation and
 flowchart immediately above the relevant function** (before its decorator, if
