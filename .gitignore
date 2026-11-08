@@ -11,3 +11,6 @@ wheels/
 
 # Environment files
 .env
+.env.docker
+.pytest_cache/
+.venv-1/

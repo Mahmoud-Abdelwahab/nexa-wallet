@@ -475,3 +475,16 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - Paid: verify and credit once, including a later duplicate webhook.
 - 75 tests passed using isolated SQLite data and mocked provider responses. No
   new migration or existing-data changes. Restart the consumer to load this policy.
+
+### 2026-11-08 — Shareable Docker setup
+
+- Added a locked multi-stage Dockerfile, non-root runtime, separate test image,
+  Docker build exclusions, and generated `.env.docker` settings without sharing secrets.
+- Compose now runs PostgreSQL/Redis health checks, migrations, and the API;
+  the optional payments profile adds both workers. Host ports bind to loopback.
+- Normalized Git's app/Models directory to app/models for Linux imports.
+- README covers Docker-only startup, sandbox setup, logs, tests, data persistence,
+  port conflicts, updates and local development. Real payments still need personal sandbox keys.
+- Isolated Docker validation: fresh migrations passed; health/docs, register/login,
+  wallet lookup and token refresh passed; 79 tests passed in Linux. Worker startup
+  was checked with an empty queue, not with a real provider payment.
