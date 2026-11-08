@@ -442,3 +442,36 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - 60 unit tests passed. Isolated PostgreSQL tests passed for three concurrent
   identical creations, changed-data conflicts, and duplicate-payment posting.
 - English flowchart and Postman instructions are in `MOYASAR_TOPUP_FLOW.md`.
+
+### 2026-11-08 — Payment leases, bounded retries and support alerts
+
+- Replaced the long DB transaction around HTTP with claim/commit, fetch without a
+  DB session, then fenced finalization/commit. Claim counters reject stale owners.
+- Added 60-second leases and up to eight provider attempts per event; 404 is retried,
+  not treated as failed. Exhaustion flags REVIEW_REQUIRED and persists an alert.
+- Matching failed payments become FAILED without credit or automatic retries.
+  Added payment_failed webhook intake, still verified through the provider API.
+- Migration b71e58d42a90 applied: nullable event.support_alert_at. Safe reasons live
+  in last_error; support logs happen after commit. Added a local read-only alert viewer.
+- 69 automated tests plus isolated PostgreSQL concurrency/lease tests passed.
+- Existing running workers must be restarted to load this version. No real payment
+  was created and no existing wallet balance was changed by these tests.
+
+### 2026-11-08 — Keep late payments eligible
+
+- 404 and initiated/authorized now keep PENDING: recheck after 2 minutes while the
+  TopUp is younger than 15 minutes, then after 60 minutes. No automatic waiting expiry.
+- Removed pre-fetch attempt cutoff so a late paid response can complete normally.
+  Technical errors still escalate at claim count 8 (total claims, not consecutive errors).
+- No new classes, tables or migrations. Existing review cases are not automatically reopened.
+- 72 tests passed, including late webhook, missing late webhook and duplicate-credit protection.
+
+### 2026-11-08 — Reconciliation scenario checks
+
+- Added producer-to-consumer tests starting with an old TopUp and no webhook.
+- 404: stays PENDING, same event rechecked later; slow checks by age/claim threshold.
+- Timeout/5xx: exponential backoff capped at 60 minutes. Claim 8 records a support
+  alert once while keeping PENDING and continuing hourly checks, not REVIEW_REQUIRED.
+- Paid: verify and credit once, including a later duplicate webhook.
+- 75 tests passed using isolated SQLite data and mocked provider responses. No
+  new migration or existing-data changes. Restart the consumer to load this policy.

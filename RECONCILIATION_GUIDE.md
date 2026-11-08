@@ -1,6 +1,7 @@
 # Nexa Wallet — TopUp Reconciliation
 
-Status: planned business flow, documented on 2026-11-08. Not implemented yet.
+Status: updated on 2026-11-08. Reconciliation enqueues recovery events; the existing
+Moyasar worker performs provider lookups and financial posting.
 
 ## Why do we need it?
 
@@ -26,51 +27,40 @@ Wallet: no credit yet
 The reconciliation worker provides a second way to discover this payment. It
 checks existing payments; it does not initiate payments or charge the customer.
 
-## Planned flow
+## Implemented flow
 
 ```text
-Run periodically
+Reconciliation worker (Producer): scan, then sleep 60 seconds
       |
       v
-Select a small batch of old PENDING TopUps due for a check
+Find up to 100 oldest PENDING TopUps at least 5 minutes old
+      |
+      +-- Unfinished event already exists for Payment ID? Skip
       |
       v
-Look up each stored moyasar_payment_id using the backend API key
+INSERT reconcile:{topup.id}, event_type=reconciliation
+ON CONFLICT(id) DO NOTHING -> COMMIT
       |
-      +-- Timeout / temporary error -> keep pending; schedule retry
+      v
+moyasar_webhook_events (database Queue)
       |
-      +-- Payment not found -> no credit; schedule a later check
+      v
+Moyasar worker (Consumer)
       |
-      +-- Payment still in progress -> no credit; schedule a later check
-      |
-      +-- Other payment state -> apply an explicit failure/review rule
-      |
-      +-- Paid -> use shared verification and posting logic
-                       |
-                       +-- ID / amount / currency mismatch -> REVIEW_REQUIRED
-                       |
-                       v
-                 Lock TopUp; recheck its current state
-                       |
-                       +-- COMPLETED -> skip; already credited
-                       +-- REVIEW_REQUIRED -> skip automatic credit
-                       |
-                       v
-                 Lock wallet; check owner, currency and ACTIVE status
-                       |
-                       +-- Invalid -> REVIEW_REQUIRED; no credit
-                       |
-                       v
-                 Transaction(SUCCESS) + TOP_UP/CREDIT ledger
-                 + increase balance + TopUp(COMPLETED)
-                       |
-                       v
-                 One COMMIT; any posting failure -> ROLLBACK
+      +-- Claim/60-second lease -> COMMIT, release lock
+      +-- Fetch payment outside DB transaction
+      +-- Finalize with locks + attempt check -> COMMIT
 ```
 
-"Old" gives the normal webhook flow time to finish. The age threshold, batch size,
-check interval, retry limits and escalation rules must be chosen during implementation.
-Store scheduling/progress so the same unpaid requests do not block later ones.
+The producer does not call Moyasar, change TopUp status or credit money.
+`pending_event_exists` includes retrying and leased events because their
+`processed_at` remains NULL. The stable reconciliation ID also prevents inserting
+that same recovery event again after it has been processed.
+
+The consumer rechecks 404 and in-progress payments on the same event: every two
+minutes initially, then hourly once the TopUp is 15 minutes old, keeping PENDING.
+Technical errors use backoff, then hourly checks with one support alert at claim
+count eight; the TopUp remains PENDING. Waiting checks also slow down at count eight. A matching failed payment becomes FAILED with an alert immediately.
 
 ## What if the payment does not exist?
 
@@ -85,8 +75,7 @@ Reconciliation looks up that ID -> no payment exists yet
 A generated Payment ID does not prove that Moyasar has created a payment.
 Do not credit the wallet or immediately label the TopUp FAILED just because a
 lookup returns not found. Keep it pending initially and retry according to policy.
-Define an abandonment/review policy for long-lived requests; do not retry forever
-without visibility. Authentication errors also need attention, not classification
+Waiting alone never marks the TopUp for review; old requests are checked hourly. Authentication errors also need attention, not classification
 as "payment not found".
 
 ## One shared financial posting path
@@ -100,14 +89,13 @@ Old PENDING TopUp -> Reconciliation ----+--> Shared verify-and-credit logic
                                      Credit this TopUp only once
 ```
 
-Extract the reusable payment verification and posting logic from
-`TopUpPaymentProcessor`; do not copy it into a second worker. Keep webhook event
-selection/completion separate from reconciliation scheduling.
+Both producers feed the same consumer and `TopUpPaymentProcessor`. Financial
+posting is not duplicated in the reconciliation producer.
 
-Both workers may discover the same paid payment simultaneously. The TopUp row lock
+Different events may refer to the same payment and be consumed simultaneously. The TopUp row lock
 and a state check inside the database transaction make the second worker see
 COMPLETED and skip the credit. Checking PENDING only when selecting the batch is
-not enough. REVIEW_REQUIRED must never be automatically reopened by reconciliation.
+not enough. FAILED and REVIEW_REQUIRED must never be automatically reopened by reconciliation.
 
 ## Three different protections
 

@@ -81,3 +81,30 @@ The payment ID also remained unchanged. No new payment was initiated.
 The intentionally created test inbox record remains for traceability:
 `duplicate-test-b8351823f852467eb1328ee9de5251b8`, processed at
 `2026-11-07 19:02:12.389420+00:00`.
+
+## 2026-11-08 — Claim/fetch/finalize validation
+
+69 tests passed. Added cases cover 404 retry timing/exhaustion, failed-payment
+support alerts, committed leases, stale-worker rejection, finalization rollback,
+and no checked-out database connection during provider HTTP. PostgreSQL checks
+confirmed event locks are released during lookup, only one worker claims an event,
+and expired-lease recovery cannot double-credit. New migration b71e58d42a90 was
+applied; support-alert viewer reads successfully. All financial test fixtures were
+isolated and provider responses mocked. Old running workers need a restart.
+
+## Late-payment policy update — 2026-11-08
+
+72 tests passed. 404 and in-progress payments remain PENDING with slower checks
+after 15 minutes; late paid results still credit after more than eight claims.
+Verified late-webhook and no-webhook recovery without a second credit. Technical
+errors retain the claim-count limit. No schema changes or existing data edits.
+
+### 2026-11-08 — Reconciliation scenario checks
+
+- Added producer-to-consumer tests starting with an old TopUp and no webhook.
+- 404: stays PENDING, same event rechecked later; slow checks by age/claim threshold.
+- Timeout/5xx: exponential backoff capped at 60 minutes. Claim 8 records a support
+  alert once while keeping PENDING and continuing hourly checks, not REVIEW_REQUIRED.
+- Paid: verify and credit once, including a later duplicate webhook.
+- 75 tests passed using isolated SQLite data and mocked provider responses. No
+  new migration or existing-data changes. Restart the consumer to load this policy.

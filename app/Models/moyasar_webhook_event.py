@@ -33,7 +33,8 @@ class MoyasarWebhookEventRecord(Base):
         String(50), nullable=False
     )
 
-    # Number of scheduled retries in the current code, not all processing attempts.
+    # Claim counter and ownership version; increases before each processing attempt.
+    # Legacy values counted scheduled retries; they are retained as prior attempts.
     attempts: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False
     )
@@ -43,7 +44,7 @@ class MoyasarWebhookEventRecord(Base):
         String(255), nullable=True
     )
 
-    # First eligible processing time; the processor moves it forward when scheduling a retry.
+    # Eligibility time: a 60-second lease during processing, or a later retry deadline.
     next_attempt_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -53,6 +54,12 @@ class MoyasarWebhookEventRecord(Base):
     # None means unfinished; a timestamp means handled, including review outcomes.
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Durable support flag for failed payments/review; last_error holds a safe reason.
+    # Separate from processed_at: finished events may still need human attention.
+    support_alert_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
     )
 
     # Time the notification was first stored.
