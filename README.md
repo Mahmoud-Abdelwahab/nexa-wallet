@@ -213,6 +213,48 @@ DEBUG=false .venv/bin/python -m alembic upgrade head
 DEBUG=false .venv/bin/python -m uvicorn app.main:app --reload
 ```
 
+## What do Dockerfile and compose.yaml do?
+
+| File | Responsibility |
+| --- | --- |
+| `Dockerfile` | Builds the application's image: Python, locked dependencies, source code and the default start command. |
+| `compose.yaml` | Runs the whole stack: API, PostgreSQL, Redis, migrations and optional workers, with their network, volumes and startup order. |
+
+```text
+Dockerfile -> build -> application image -> API / worker containers
+compose.yaml -> connects those containers to PostgreSQL and Redis
+```
+
+## Test it as a new user
+
+1. Commit and push your changes, then clone the repository into a **new folder**.
+   Do not copy your existing `.env`, `.env.docker` or `.venv` into it.
+2. Follow the environment-generation command above. If testing beside another
+   running copy, set `API_PORT=18081`, `POSTGRES_PORT=15434`, `REDIS_PORT=16381`
+   in the new `.env.docker` and use a distinct Compose project name.
+3. Start the isolated copy and inspect its status:
+
+```bash
+docker compose --env-file .env.docker -p nexa-fresh-check up -d --build
+docker compose --env-file .env.docker -p nexa-fresh-check ps -a
+```
+
+4. Open `http://localhost:18081/docs` with the alternate ports above. Check health,
+   register, log in, and list the new user's zero-balance wallet. `migrate` should
+   show Exited (0); API, PostgreSQL and Redis should be healthy.
+5. Run the automated tests from that copy:
+
+```bash
+docker compose --env-file .env.docker -p nexa-fresh-check build tests
+docker compose --env-file .env.docker -p nexa-fresh-check run --rm --no-deps tests
+docker compose --env-file .env.docker -p nexa-fresh-check down
+```
+
+The distinct project name creates separate volumes. Reusing that name later also
+reuses its data; choose a new project name to test first startup again. For a target
+Windows or Intel/AMD device, repeat the steps there too: a successful local Linux
+container test does not itself test every host OS or CPU architecture.
+
 ## Docker verification
 
 Validated on 2026-11-08 in an isolated Docker project: fresh PostgreSQL migrations,

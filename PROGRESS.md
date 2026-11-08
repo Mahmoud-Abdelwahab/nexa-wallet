@@ -488,3 +488,14 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - Isolated Docker validation: fresh migrations passed; health/docs, register/login,
   wallet lookup and token refresh passed; 79 tests passed in Linux. Worker startup
   was checked with an empty queue, not with a real provider payment.
+
+### 2026-11-08 — Clean Git snapshot portability check
+
+- Tested committed files exported to a fresh directory, without host .env or .venv.
+- Found identical app/Models and app/models paths in commit 3c62711; removed only
+  uppercase duplicates from the Git index, keeping lowercase files intact.
+- Retested the corrected index snapshot with new secrets and isolated Docker volumes:
+  migrations, health/docs, registration, login, zero-balance wallet, Redis refresh,
+  and all 79 tests passed. Two dependency deprecation warnings remain.
+- Added README instructions for a fresh-clone check and Dockerfile/Compose roles.
+  The path correction still needs a commit/push. Windows/x86 hosts were not tested.
