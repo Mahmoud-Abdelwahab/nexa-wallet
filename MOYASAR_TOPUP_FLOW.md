@@ -286,6 +286,10 @@ Source reviewed on **2026-11-07**; this is a code inventory, not a new integrati
 
 ## Convention for the next code steps
 
+Planned next feature: [TopUp reconciliation](RECONCILIATION_GUIDE.md). Periodically
+check old PENDING requests to recover paid payments whose webhook was never saved,
+using the same financial posting logic. This worker is not implemented yet.
+
 For every implementation step, place a short **English business explanation and
 flowchart immediately above the relevant function** (before its decorator, if
 present). Keep function names simple, preserve the charts, and connect the code
