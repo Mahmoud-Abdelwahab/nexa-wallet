@@ -63,8 +63,39 @@ continue even if the user closes the app or never receives the SDK callback.
 
 ## Step 1 — Mobile → Nexa Backend: create the funding request
 
-The authenticated mobile client calls `POST /topups` with `wallet_id` and `amount`.
-The backend checks wallet ownership, ACTIVE status, supported currency, and a
+The authenticated mobile client calls `POST /topups` with `wallet_id` and `amount`,
+plus a required `Idempotency-Key` header (1–128 characters; not whitespace only).
+Generate one key per intended funding request and reuse it after network failures.
+For the same user, the same key and equivalent body return the saved TopUp and
+Payment ID. Changing the wallet or amount with that key returns `409`.
+
+```text
+POST /topups + Idempotency-Key
+    ↓
+Validate amount (3, 3.0, 3.00 all become 300 minor units)
+    ↓
+Existing key for this user?
+    ├── Yes → compare wallet + amount
+    │           ├── Same → return saved IDs and current status (201)
+    │           └── Changed → 409 Conflict
+    └── No → validate wallet → insert TopUp + key → commit → 201
+                                  ↓
+                    Unique (user_id, idempotency_key)
+                    Concurrent retries return the winning record
+```
+
+The key is stored on `topups`, separately from transfer keys. No separate hash is
+needed because both input fields are already stored and can be compared directly.
+A failed commit rolls back both the request and its key. Existing pre-migration
+TopUps have a NULL key and remain readable; they cannot be replayed with a new key.
+Keys currently have no expiry. A new key means a new request, even with identical
+data. Replays return the current status, not a frozen copy of the first response.
+
+Postman example: header `Idempotency-Key: TOPUP-001`, body
+`{"wallet_id": 1, "amount": "3.00"}`. Send it twice to get the same IDs; change
+the amount to `4.00` with that key to receive `409`. Use `GET /topups/{id}` to poll.
+
+For a new key, the backend checks wallet ownership, ACTIVE status, supported currency, and a
 valid positive amount. It saves a TopUp with status `PENDING`, generates a
 `givenID`, and stores the expected amount and currency before responding.
 

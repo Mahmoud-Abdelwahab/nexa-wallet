@@ -1,13 +1,13 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.routes.dependencies import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.schemas.topup import CreateTopUpRequest, TopUpResponse
-from app.services.topup_service import TopUpService
+from app.services.topup_service import TopUpService, TopUpIdempotencyConflictError
 
 
 router = APIRouter(
@@ -32,6 +32,7 @@ let request = try PaymentRequest(
 )
 def create_topup(
     request: CreateTopUpRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=128),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -42,7 +43,11 @@ def create_topup(
             user_id=current_user.id,
             wallet_id=request.wallet_id,
             amount=request.amount,
+            idempotency_key=idempotency_key,
         )
+
+    except TopUpIdempotencyConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))

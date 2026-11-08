@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     String,
     Uuid,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -44,6 +45,7 @@ class TopUp(Base):
     __tablename__ = "topups"
 
     __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_topup_user_key"),
         CheckConstraint(
             "amount_minor > 0",
             name="ck_topup_amount_positive",
@@ -62,6 +64,9 @@ class TopUp(Base):
         ForeignKey("users.id"),
         nullable=False,
     )
+
+    # One key per user's funding request. NULL is only for records created before migration.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Selected by the mobile and checked by the service; receives the credit.
     wallet_id: Mapped[int] = mapped_column(

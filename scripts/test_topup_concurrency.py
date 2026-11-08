@@ -24,6 +24,7 @@ from app.models.moyasar_webhook_event import MoyasarWebhookEventRecord as Event
 from app.core.enums import Currency
 from app.integrations.moyasar_client import MoyasarPayment
 from app.services.topup_payment_processor import TopUpPaymentProcessor
+from app.services.topup_service import TopUpService, TopUpIdempotencyConflictError
 
 
 
@@ -68,6 +69,45 @@ def main():
             assert db.scalar(select(func.count()).select_from(LedgerEntry))==1
             assert db.scalar(select(func.count()).select_from(Event).where(Event.processed_at.is_not(None)))==2
         print('PASS PostgreSQL: two concurrent workers, distinct events, same payment -> one transaction, one credit, balance 50 -> 150')
+
+        def test_creation_race(key, amounts):
+            # Force every request past the initial lookup before any INSERT runs.
+            start_insert = Barrier(len(amounts))
+
+            def create_request(amount):
+                with Session(audit_engine) as db:
+                    service = TopUpService(db)
+                    create_once = service.topup_repository.create_once
+
+                    def insert_together(topup):
+                        start_insert.wait(timeout=10)
+                        return create_once(topup)
+
+                    service.topup_repository.create_once = insert_together
+                    try:
+                        result = service.create_topup(1, wid, Decimal(amount), key)
+                        return (str(result.id), result.moyasar_payment_id)
+                    except TopUpIdempotencyConflictError:
+                        return 'conflict'
+
+            with ThreadPoolExecutor(max_workers=len(amounts)) as pool:
+                futures = [pool.submit(create_request, amount) for amount in amounts]
+                results = [future.result(timeout=20) for future in futures]
+            with Session(audit_engine) as db:
+                assert db.scalar(select(func.count()).select_from(TopUp).where(
+                    TopUp.idempotency_key == key,
+                )) == 1
+                assert db.get(Wallet, wid).balance == Decimal('150')
+                assert db.scalar(select(func.count()).select_from(Transaction)) == 1
+                assert db.scalar(select(func.count()).select_from(LedgerEntry)) == 1
+            return results
+
+        same = test_creation_race('same-request', ['3', '3.0', '3.00'])
+        assert same[0] != 'conflict' and len(set(same)) == 1
+        print('PASS PostgreSQL: three concurrent creations -> one TopUp and one Payment ID')
+        changed = test_creation_race('changed-request', ['3', '4'])
+        assert changed.count('conflict') == 1
+        print('PASS PostgreSQL: concurrent changed data -> one winner, one conflict, no credit')
     finally:
         audit_engine.dispose()
         with engine.begin() as c:

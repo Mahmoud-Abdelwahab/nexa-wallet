@@ -32,22 +32,52 @@ DEBUG=false .venv/bin/python scripts/test_topup_concurrency.py --run-local
 ## Payment ID lifetime
 
 ```text
-POST /topups -> new TopUp A -> generate Payment ID A once
+POST /topups + key A -> new TopUp A -> generate Payment ID A once
                                   |
                      GET A / worker retry / duplicate webhook
                                   |
                           keep Payment ID A
 
-POST /topups again -> new TopUp B -> generate Payment ID B
+POST /topups + key A + same body -> return TopUp A and Payment ID A
+POST /topups + key A + changed body -> 409
+POST /topups + key B -> new TopUp B -> generate Payment ID B
 ```
 
 The service generates the ID with `uuid4()` and stores it. Reads return the saved
 value; completion and retries do not regenerate it. The mobile passes this value
 as `givenID` (the payment API JSON field is `given_id`).
 
-**Current gap:** `POST /topups` has no request idempotency. Repeating the same body
-creates another pending TopUp with a different payment ID. Creating a TopUp alone
-does not charge or credit money, but clients must not treat repeated creation as
-retrieving the previous request. Poll `GET /topups/{id}` for an existing request.
-Creation idempotency should be added separately; payment event deduplication
-already prevents posting the same payment twice.
+**Update:** creation idempotency is now implemented. New POST requests require
+`Idempotency-Key`; the same user's key and equivalent wallet/amount return the
+saved request. A different wallet or amount returns 409. New keys create new
+requests. Existing records without a key remain readable via GET.
+
+60 unit tests now pass. Additional isolated PostgreSQL checks passed for three
+concurrent identical creations (one TopUp, one Payment ID), and concurrent
+different amounts sharing a key (one winner, one conflict). No credit was posted
+by these creation tests. Migration `a903bc521d40` was applied locally.
+
+## Duplicate webhook test against the running local API and worker
+
+On 2026-11-07, replayed the completed sandbox payment above using authenticated
+POST requests to `http://127.0.0.1:8000/webhooks/moyasar`:
+
+1. Sent the original Event ID twice. Both responses were HTTP 200. The inbox kept
+   one record for that ID and its original processing timestamp was unchanged.
+2. Sent a new test Event ID for the same Payment ID. The API returned HTTP 200,
+   and the running worker processed it without errors or scheduled retries.
+   The completed TopUp prevented a second financial posting.
+
+| Financial state | Before | After both cases |
+| --- | --- | --- |
+| Wallet 1 balance | 353.0000 AED | 353.0000 AED |
+| TopUp status | COMPLETED | COMPLETED |
+| Linked transaction | 4 | 4 |
+| Transactions with receiver wallet 1 | 1 | 1 |
+| Ledger entries for this TopUp transaction | 1 | 1 |
+| All wallet 1 ledger entries | 2 | 2 |
+
+The payment ID also remained unchanged. No new payment was initiated.
+The intentionally created test inbox record remains for traceability:
+`duplicate-test-b8351823f852467eb1328ee9de5251b8`, processed at
+`2026-11-07 19:02:12.389420+00:00`.

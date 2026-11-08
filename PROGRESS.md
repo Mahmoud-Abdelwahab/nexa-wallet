@@ -430,3 +430,15 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - Fail worker startup for missing/placeholder/non-test API keys. A real test key still needs configuring locally.
 - Validation: 48 automated tests passed, targeted Pyright check passed, and two-worker PostgreSQL contention test passed in an isolated schema with mocked payment responses. Added an opt-in concurrency script; no live user balances changed.
 - Deferred: claim/lease design to avoid holding event locks across HTTP, retry limits/alerts, and real provider integration testing.
+# 2026-11-07 — TopUp creation idempotency
+
+- `POST /topups` now requires `Idempotency-Key`. Same user/key/wallet/amount returns
+  the existing TopUp and Payment ID with 201; changed data returns 409.
+- Added nullable `topups.idempotency_key` for legacy compatibility and a unique
+  `(user_id, idempotency_key)` constraint. Reviewed/applied migration `a903bc521d40`.
+- PostgreSQL conflict handling coordinates simultaneous inserts. The request and
+  key commit together; failures roll back both. No hash is needed for two stored
+  input fields. A replay returns the current funding status.
+- 60 unit tests passed. Isolated PostgreSQL tests passed for three concurrent
+  identical creations, changed-data conflicts, and duplicate-payment posting.
+- English flowchart and Postman instructions are in `MOYASAR_TOPUP_FLOW.md`.
