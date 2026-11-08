@@ -3,6 +3,10 @@ uvicorn app.main:app --reload  ====> to run the server
 
 alembic revision --autogenerate -m "add idempotency records" ==> add new thing to DB like table or attrubte any change in DB need to do this migration 
 
+
+source .venv/bin/activate  ==> to activate the .venu that installed on docker not in the system activate it first before doing migartion 
+python -m alembic current
+
 alembic upgrade head ===> 
 alembic current ==>
 docker compose up -d      # شغّل

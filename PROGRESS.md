@@ -403,3 +403,42 @@ _Last updated: 2026-10-28 — reviewed sync/async execution, added worker-bounda
 - Existing wallet balances were unchanged. See `TRANSFER_TEST_RESULTS.md` for the
   full report and reproducible command. Load, connection-limit and failure testing
   remain separate work; Moyasar top-up/webhook integration has not started.
+
+### 2026-11-07 — Agreed Moyasar TopUp business reference
+
+- Added [Moyasar TopUp Flow](MOYASAR_TOPUP_FLOW.md) as the English reference for all six steps, with a sequence diagram, posting flow, status meanings, API field mapping, and the current implementation checklist.
+- Backend COMPLETED is the source of truth for wallet credit; SDK paid only indicates payment progress. The target design saves webhook events before acknowledgement, verifies payments through a worker, and posts once in one database transaction.
+- Durable webhook storage, worker verification/retries, atomic TopUp credit, and REVIEW_REQUIRED remain planned. The current Transaction sender/receiver requirements need an external-funding accounting decision before posting is implemented.
+- Future implementation steps must have short business explanations and flowcharts above their functions, with comments matching implemented behavior.
+- Documentation-only update; no application behavior or database schema changed in this step.
+
+### 2026-11-07 — Durable Moyasar webhook receipt
+
+- Replaced the logging-only webhook with a synchronous database-backed handler and kept the business flowchart above the function.
+- Verifies SecretStr safely, rejects live events, ignores unsupported event types, validates Payment IDs, and saves payment_paid events with Event ID deduplication.
+- Returns success only after commit for accepted events; database failures roll back. No wallet credit happens in this route.
+- Registered the event model and applied migration ee20e59308b2 locally.
+- Validation: 31 automated tests passed; PostgreSQL duplicate-receipt check passed with its test event rolled back. Worker processing remains planned.
+
+### 2026-11-07 — English worker reference and TopUp processing fixes
+
+- Standardized Moyasar/TopUp code comments and flowcharts in English. Added purpose/source/use hints for every related ORM model, Pydantic schema, and TopUpStatus.
+- Added [Worker and TopUp Models](MOYASAR_WORKER_GUIDE.md): polling, query breakdown, backoff arithmetic, delivery versus processing retries, atomic commits, and crash recovery.
+- Recheck ACTIVE wallet status under lock; inactive/suspended wallets go to review without credit.
+- Normalize invalid payment JSON/schema responses into a safe retryable error; validate payment field types strictly so malformed responses do not block the oldest-event queue.
+- Payment ID mismatches review the expected TopUp, without modifying another TopUp or reopening a completed credit.
+- Fail worker startup for missing/placeholder/non-test API keys. A real test key still needs configuring locally.
+- Validation: 48 automated tests passed, targeted Pyright check passed, and two-worker PostgreSQL contention test passed in an isolated schema with mocked payment responses. Added an opt-in concurrency script; no live user balances changed.
+- Deferred: claim/lease design to avoid holding event locks across HTTP, retry limits/alerts, and real provider integration testing.
+# 2026-11-07 — TopUp creation idempotency
+
+- `POST /topups` now requires `Idempotency-Key`. Same user/key/wallet/amount returns
+  the existing TopUp and Payment ID with 201; changed data returns 409.
+- Added nullable `topups.idempotency_key` for legacy compatibility and a unique
+  `(user_id, idempotency_key)` constraint. Reviewed/applied migration `a903bc521d40`.
+- PostgreSQL conflict handling coordinates simultaneous inserts. The request and
+  key commit together; failures roll back both. No hash is needed for two stored
+  input fields. A replay returns the current funding status.
+- 60 unit tests passed. Isolated PostgreSQL tests passed for three concurrent
+  identical creations, changed-data conflicts, and duplicate-payment posting.
+- English flowchart and Postman instructions are in `MOYASAR_TOPUP_FLOW.md`.

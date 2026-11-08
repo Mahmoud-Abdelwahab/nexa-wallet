@@ -25,10 +25,10 @@ class Transaction(Base):
         nullable=False,
     )
 
-    sender_wallet_id: Mapped[int] = mapped_column(
+    sender_wallet_id: Mapped[int | None] = mapped_column( # None for external top-ups
         ForeignKey("wallets.id"),
-        nullable=False,
-    )
+        nullable=True,
+    )   
 
     receiver_wallet_id: Mapped[int] = mapped_column(
         ForeignKey("wallets.id"),

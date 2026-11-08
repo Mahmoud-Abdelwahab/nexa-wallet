@@ -1,4 +1,9 @@
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
-    "python.analysis.exclude": ["**/.venv/**", "**/.venv-1/**", "**/__pycache__/**"]
+    "python.analysis.exclude": [
+        "**/.venv/**",
+        "**/.venv-1/**",
+        "**/__pycache__/**"
+    ],
+    "python.terminal.useEnvFile": true
 }
