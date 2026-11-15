@@ -8,7 +8,7 @@ from app.core.enums import Currency, WalletStatus
 
 
 class WalletConversionResponse(BaseModel):
-    # الرصيد الأصلي يفضل بعملته؛ estimated_in_base قيمة عرض منفصلة، مش رصيد جديد.
+    # Keep the original balance in its own currency; estimated_in_base is a separate display value.
     wallet_id: int
     currency: Currency
     status: WalletStatus
@@ -24,7 +24,7 @@ class WalletSummaryResponse(BaseModel):
     estimated_total: Decimal
     is_estimate: bool
     rate_source: str | None
-    # أقدم تاريخ سعر مستخدم، عشان ما نوحيش إن كل الأسعار أحدث من الحقيقة.
-    # لو مفيش تحويل عملة: rates_as_of/rate_source = None وis_estimate = False.
+    # Report the oldest rate date used, avoiding a misleading claim that every rate is newer.
+    # Without FX conversion: rates_as_of/rate_source are None and is_estimate is False.
     rates_as_of: date | None
     wallets: list[WalletConversionResponse]

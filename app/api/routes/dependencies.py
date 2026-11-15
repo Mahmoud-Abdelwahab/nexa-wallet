@@ -1,16 +1,18 @@
-# أي endpoint محمية بتستخدم get_current_user بتمر بالفلو ده:
+# Every protected endpoint using get_current_user follows this flow:
 # Bearer JWT
-#     |
-#     v
-# Signature + exp -> sub + token_version -> User من PostgreSQL
-#     |                                       |
-#     |                                مقارنة token_version
-#     v                                       |
-# sid -> Redis: auth_session:user:sid -> refresh_session:current_hash
-#                                               |
-#                       Active + نفس النسخة؟ -> السماح للـ endpoint
-#                       مش Active؟           -> 401 / SESSION_REVOKED
-# انتهاء JWT فقط -> ACCESS_TOKEN_EXPIRED؛ عطل Redis -> 503، مش Force Logout.
+#   |
+#   v
+# Verify signature and expiration
+#   |
+#   v
+# Load PostgreSQL user and compare token_version (worker thread)
+#   |
+#   v
+# sid -> Redis pointer -> current refresh record (one atomic read)
+#   |
+#   +-- Active and matching version --> allow the endpoint
+#   +-- Missing or inactive ---------> 401 / SESSION_REVOKED
+# Expired JWT -> ACCESS_TOKEN_EXPIRED; Redis outage -> 503, not forced logout.
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose.exceptions import ExpiredSignatureError
@@ -28,15 +30,15 @@ from app.repositories import UserRepository
 
 bearer_scheme = HTTPBearer(auto_error=False)
 SESSION_REVOKED_DETAIL = {
-    # الموبايل يعتمد على code الثابتة، مش نص message اللي ممكن يتغيّر أو يترجم.
+    # Mobile clients match this stable code, not message text that may change or be translated.
     "code": "SESSION_REVOKED",
     "message": "Your session is no longer active. Please log in again.",
 }
 
 
 def _load_user_sync(db: Session, user_id: int, token_version: int) -> User:
-    # دي حماية على مستوى الحساب: تغيير الباسورد/Logout All يغيّر النسخة لكل الأجهزة.
-    # حذف جهاز واحد ما بيغيّرش token_version؛ بيتحكم فيه sid داخل Redis.
+    # Account-wide check: password changes and logout-all increment the version for every device.
+    # Deleting one session leaves token_version unchanged; its Redis sid controls revocation.
     user = UserRepository(db).get_by_id(user_id)
     if user is None:
         raise HTTPException(401, "Invalid authentication credentials")
@@ -55,7 +57,7 @@ async def get_current_user(
     try:
         payload = decode_access_token(credentials.credentials)
     except ExpiredSignatureError:
-        # انتهاء الـ Access مش معناه إن الجهاز اتشال؛ الموبايل يجرّب Refresh الأول.
+        # An expired access token does not imply revocation; the client should attempt refresh first.
         raise HTTPException(401, {
             "code": "ACCESS_TOKEN_EXPIRED",
             "message": "Access token expired. Refresh your session.",
@@ -71,18 +73,18 @@ async def get_current_user(
 
     # SQLAlchemy stays in a worker; the async Redis client stays on the loop.
     user = await run_in_threadpool(_load_user_sync, db, user_id, token_version)
-    # run_in_threadpool بتبعد استعلام SQLAlchemy الـ sync عن الـ Event Loop.
-    # await Redis تحت تفضل على الـ Event Loop لأنها مكتبة async أصلًا.
+    # run_in_threadpool moves synchronous SQLAlchemy queries off the event loop.
+    # The async Redis client below stays on the event loop.
     sid = payload.get("sid")
     # Older JWTs have no sid and cannot establish a revocable device identity.
     if not isinstance(sid, str) or not sid or len(sid) > 128:
-        # JWT قديمة من غير sid ما ينفعش نسمح لها تتجاوز فحص إلغاء الجهاز.
+        # Legacy JWTs without sid must not bypass per-session revocation checks.
         raise HTTPException(401, SESSION_REVOKED_DETAIL)
     try:
-        # نفحص الجلسة في كل طلب، من غير cache محلية تؤخّر اكتشاف الحذف.
+        # Check Redis on every request; a local cache would delay detection of revocation.
         session = await RefreshTokenRedisStore(redis_client).get_active_session(user_id, sid)
     except RedisError:
-        # مش عارفين حالة الجلسة أثناء العطل: نرفض الطلب مؤقتًا ونحتفظ بتوكنات العميل.
+        # During an outage the session state is unknown: reject temporarily and keep the client's tokens.
         # An outage must neither authorize unverified sessions nor force logout.
         raise HTTPException(503, {
             "code": "AUTH_SERVICE_UNAVAILABLE",
@@ -90,7 +92,7 @@ async def get_current_user(
         }) from None
     if session is None or session.token_version != token_version:
         raise HTTPException(401, SESSION_REVOKED_DETAIL)
-    # نحفظ sid اللي اتأكدنا منها في نفس الطلب؛ Logout يستخدمها بدل sid يبعته العميل.
+    # Save the verified sid for this request; logout uses it instead of a client-supplied sid.
     request.state.session_id = sid
-    # الطلب اللي عدى النقطة دي قبل حذف الجلسة ممكن يكمل؛ مش بنلغي شغل بدأ بالفعل.
+    # A request authenticated before revocation may finish; this does not cancel work already authorized.
     return user

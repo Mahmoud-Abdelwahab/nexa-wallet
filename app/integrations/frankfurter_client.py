@@ -4,8 +4,8 @@ Rates are for DISPLAY ONLY. Never use them to settle a transfer or post ledger
 entries. The API's rate is 'quote currency per 1 base currency'.
 """
 # currencies -> Redis cache (6h) -> miss/invalid? -> Frankfurter -> validate -> cache
-# بنرسل رموز العملات فقط؛ المصدر الخارجي ما يعرفش أرصدة أو بيانات المستخدم.
-# بيانات FX عامة، فعطل الكاش يسمح بمحاولة HTTP؛ فحص جلسة الدخول نفسه يفضل إلزامي.
+# Send only currency codes; the provider receives no balances or user details.
+# Public FX cache failures allow an HTTP fallback; session authentication remains mandatory.
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -20,7 +20,7 @@ from app.core.enums import Currency
 
 FRANKFURTER_RATES_URL = "https://api.frankfurter.dev/v2/rates"
 FX_CACHE_SECONDS = 6 * 60 * 60
-# نرفض البيانات الأقدم من أسبوع، مع السماح بعطلات نهاية الأسبوع وتوقف النشر.
+# Reject rates older than one week while allowing weekends and publication gaps.
 MAX_RATE_AGE_DAYS = 7
 
 

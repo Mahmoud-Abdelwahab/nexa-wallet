@@ -51,7 +51,7 @@ class IdempotencyRecord(Base):
         nullable=True,
     )
    # why status is important: The status field is crucial for tracking the state of the idempotency record. It indicates whether the request is still being processed or has been completed. This helps in managing retries and ensuring that duplicate processing does not occur for the same request.
-   # PROCESSING / COMPLETED: بنفرق بين طلب لسه بيتنفذ وطلب اتنفذ واتحفظت نتيجته.
+   # PROCESSING / COMPLETED distinguish an in-progress request from a saved final result.
     status: Mapped[IdempotencyStatus] = mapped_column(
         SQLEnum(IdempotencyStatus),
         default=IdempotencyStatus.PROCESSING,

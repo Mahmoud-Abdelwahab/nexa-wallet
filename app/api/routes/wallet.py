@@ -1,6 +1,9 @@
 import logging
+from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -21,6 +24,11 @@ from app.services.recipient_rate_limit import allow_recipient_lookup
 from app.services.recipient_service import RecipientService
 from app.services.wallet_service import WalletService
 from app.services.wallet_summary_service import calculate_wallet_summary
+from app.services.wallet_statement_service import (
+    InvalidStatementPeriod,
+    StatementTooLarge,
+    WalletStatementService,
+)
 from app.api.routes.dependencies import get_current_user
 
 
@@ -76,9 +84,9 @@ def get_wallets(
     )
 
 
-# GET /wallets/summary لازم تسبق المسار الديناميكي /{wallet_id}.
+# GET /wallets/summary must precede the dynamic /{wallet_id} route.
 # User wallets (DB/thread) -> needed currencies -> FX cache/API -> Decimal summary.
-# ده عرض تقديري فقط؛ مفيش تعديل balances أو ledger أو تنفيذ صرف عملة.
+# Estimated display values only: do not change balances, write ledger entries or execute FX trades.
 @router.get("/summary", response_model=WalletSummaryResponse)
 async def get_wallet_summary(
     base_currency: Currency = Currency.AED,
@@ -90,11 +98,11 @@ async def get_wallet_summary(
     )
     needed = {wallet.currency for wallet in wallets if wallet.currency != base_currency}
     try:
-        # لو كل المحافظ بنفس عملة العرض أو مفيش محافظ، مش محتاجين مصدر أسعار خارجي.
+        # Empty portfolios and same-currency wallets need no external rate provider.
         rates = await FrankfurterClient(redis_client).get_rates(base_currency, needed) if needed else {}
         return calculate_wallet_summary(wallets, base_currency, rates)
     except ExchangeRateUnavailable:
-        # ما نعرضش Total جزئي يوحي للمستخدم إن ده إجمالي فلوسه بالكامل.
+        # Never return a partial total that could be mistaken for the user's complete portfolio.
         raise HTTPException(503, "Reference exchange rates are temporarily unavailable") from None
 
 
@@ -125,11 +133,11 @@ def get_wallet(
 
 # Request
 #    ↓
-# FastAPI يسلّم التنفيذ لـworker thread
+# FastAPI dispatches the synchronous handler to a worker thread.
 #    ↓
-# الـthread ينفّذ الاستعلام وينتظر الداتابيز
+# The worker executes the database query and waits for its result.
 #    ↓
-# الـevent loop يفضل متاح لطلبات تانية
+# The event loop remains available for other requests.
 @router.get(
     "/{wallet_id}/entries",
     response_model=list[LedgerEntryResponse],
@@ -207,3 +215,59 @@ def resolve_recipient(
             error.status_code,
         )
         raise
+
+
+# GET statement -> Auth/sid -> ownership -> bounded period -> ledger -> CSV attachment.
+# A def handler keeps synchronous SQLAlchemy and CSV rendering in a worker thread.
+@router.get(
+    "/{wallet_id}/statement",
+    response_class=Response,
+    responses={200: {
+        "description": "Download wallet ledger activity as CSV",
+        "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+    }},
+)
+def download_wallet_statement(
+    wallet_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    format: Literal["csv"] = "csv",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # This is a sync handler because the project uses a synchronous DB Session.
+    service = WalletStatementService(db)
+    try:
+        from_day, to_day = service.normalize_period(start_date, end_date)
+        csv_content = service.export_csv(
+            user_id=current_user.id,
+            wallet_id=wallet_id,
+            from_day=from_day,
+            to_day=to_day,
+        )
+    except InvalidStatementPeriod:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date range (max 366 calendar days, not in the future)",
+        )
+    except BusinessError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found",
+        )
+    except StatementTooLarge:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Too many entries; choose a shorter date range",
+        )
+
+    filename = f"nexa_wallet_{wallet_id}_{from_day}_{to_day}.csv"
+    return Response(
+        content=csv_content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

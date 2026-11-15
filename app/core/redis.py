@@ -21,7 +21,7 @@
 #         30 days                    90 days
 #           │                         │
 #        Redis TTL              stored timestamp
-# إذن الـ contract بتاعنا من دلوقتي:
+# Refresh-session policy:
 # Policy	Value
 # Access Token	Short-lived
 # Refresh idle expiration	30 days

@@ -7,8 +7,8 @@ from app.schemas.device_session import DeviceMetadata
 
 
 class RegisterRequest(DeviceMetadata):
-    # يرث بيانات الجهاز الاختيارية وحدودها من DeviceMetadata من غير تكرار التعريف.
-    # التسجيل بيعمل Login كمان، فمحتاجين بيانات الجهاز للجلسة الأولى.
+    # Inherit optional device metadata and its validation from DeviceMetadata without duplicating fields.
+    # Registration also logs the user in, so the first session needs device metadata.
     username: str = Field(
         min_length=3,
         max_length=50,
@@ -44,6 +44,6 @@ class AuthResponse(BaseModel):
 
 
 class LoginRequest(DeviceMetadata):
-    # الـ clients القديمة تقدر تبعت email/password بس؛ بيانات الجهاز لها defaults.
+    # Older clients can send email/password only; device fields have defaults.
     email: str
     password: str

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-# BaseSettings بتقرأ الحقول المطلوبة من Environment/.env وقت التشغيل.
-# Pylance مش بيشوف القيم دي، فنتجاهل تحذير نقص arguments في السطر ده فقط.
-# الحقول تفضل required: لو ناقصة فعلًا، Pydantic هترفع ValidationError عند التشغيل.
+# BaseSettings reads required fields from environment variables and .env at runtime.
+# Pylance cannot see those values; suppress its missing-arguments warning on this call only.
+# Fields remain required: missing configuration still raises ValidationError at startup.
 settings = Settings()  # pyright: ignore[reportCallIssue]

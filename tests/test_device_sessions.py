@@ -1,8 +1,8 @@
-# خريطة الاختبارات التعليمية:
-# DeviceMetadataTests: حدود بيانات الجهاز وثبات الهوية والتواريخ أثناء Rotation.
-# SessionAuthenticationTests: أكواد 401/503 وتشغيل DB خارج الـ Event Loop.
-# DeviceSessionRedisTests: فلو HTTP كامل مع Redis حقيقية، ملكية الأجهزة والتزامن.
-# الاختبارات الأخيرة اختيارية عبر DEVICE_SESSIONS_TEST_REDIS_URL؛ مفيش Redis flush.
+# Test coverage map:
+# DeviceMetadataTests: metadata validation and stable identity/timestamps during rotation.
+# SessionAuthenticationTests: 401/503 codes and database work outside the event loop.
+# DeviceSessionRedisTests: full HTTP flows with real Redis, ownership and concurrency.
+# Redis tests require DEVICE_SESSIONS_TEST_REDIS_URL; they never flush the database.
 import asyncio
 import os
 import secrets
@@ -132,7 +132,7 @@ class SessionAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"]["code"], "CURRENT_SESSION_DELETE_FORBIDDEN")
         service.assert_not_called()
-        # رفض الحذف ما يلغيش الجهاز الحالي؛ طلبه التالي يفضل ناجح.
+        # Rejecting deletion leaves the current session active for its next request.
         self.assertEqual((await self.client.get("/users/me", headers=self.headers())).status_code, 200)
 
 
@@ -210,7 +210,7 @@ class DeviceSessionRedisTests(unittest.IsolatedAsyncioTestCase):
         current_sid = decode_access_token(iphone["access_token"])["sid"]
         self.assertEqual({s["session_id"]: s["is_current"] for s in response.json()},
                          {current_sid: True, sid: False})
-        # نفس القائمة من الجهاز التاني تعكس is_current؛ الاسم مش هو معيار المقارنة.
+        # Viewing the list from the other device reverses is_current; names do not determine identity.
         other_view = await self.client.get("/auth/sessions", headers=self.headers(samsung))
         self.assertEqual({s["session_id"]: s["is_current"] for s in other_view.json()},
                          {current_sid: False, sid: True})
@@ -218,7 +218,7 @@ class DeviceSessionRedisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 204)
         self.assertEqual(response.content, b"")
         # The same authentication dependency guards every protected route.
-        for path in ("/users/me", "/wallets", "/wallets/summary", "/auth/sessions"):
+        for path in ("/users/me", "/wallets", "/wallets/summary", "/wallets/1/statement", "/auth/sessions"):
             response = await self.client.get(path, headers=self.headers(samsung))
             self.assertEqual(response.status_code, 401)
             self.assertEqual(response.json()["detail"]["code"], "SESSION_REVOKED")
@@ -303,7 +303,7 @@ class DeviceSessionRedisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.delete(f"/auth/sessions/{sid}", headers=self.headers(other))).status_code, 404)
 
     async def test_rotation_and_revoke_race_never_resurrects_session(self):
-        # نبعث Rotate وRevoke سوا؛ أيا كان مين سبق، الجلسة تفضل ملغية في الآخر.
+        # Run rotation and revocation concurrently; the session must remain revoked whichever wins.
         for _ in range(15):
             _, old_hash, session = self.tokens.create_refresh_session(self.uid)
             await self.store.store_session(old_hash, session)
@@ -317,7 +317,7 @@ class DeviceSessionRedisTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await self.store.get_active_session(self.uid, session.session_id))
 
     async def test_concurrent_authentication_and_rotation_do_not_false_revoke(self):
-        # عكس الاختبار السابق: من غير حذف، تبديل الهاش ما يسببش 401 غلط لنفس sid.
+        # Without revocation, rotating the hash must not cause a false 401 for the same sid.
         auth = await self.login()
         sid = decode_access_token(auth["access_token"])["sid"]
         current_hash = self.tokens.hash_refresh_token(auth["refresh_token"])

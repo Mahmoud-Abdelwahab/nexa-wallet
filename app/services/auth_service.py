@@ -1,11 +1,16 @@
-# فلو الجلسة الجديدة:
-# Login/Register -> User من DB -> RefreshSession + sid -> JWT فيها sid
-#                                                    -> حفظ جلسة Redis -> Response
+# New-session flow:
+# Login/Register -> DB user -> RefreshSession + sid
+#                                      |
+#                                      v
+#                              Build JWT with sid
+#                                      |
+#                                      v
+#                           Persist Redis session -> response
 #
-# فلو التجديد:
-# Refresh token -> سجل Redis -> فحص User/النسخة -> Rotation ذرّية -> JWT بنفس sid
+# Refresh flow:
+# Refresh token -> Redis record -> user/version check -> atomic rotation -> JWT with the same sid
 #
-# مهم: Refresh token بتتغيّر مع كل تجديد، لكن sid ثابتة لنفس جلسة الدخول.
+# Refresh tokens change on every rotation; sid stays fixed for the login session.
 from datetime import date
 
 from sqlalchemy.orm import Session
@@ -93,7 +98,7 @@ class AuthService:
             mobile,
             date_of_birth,
         )
-        # تسجيل الحساب بيعمل جلسة للجهاز الحالي، عشان كده بنمرّر بياناته بعد الحفظ.
+        # Registration also logs in the current client; pass its device metadata after saving the user.
         return await self._build_auth_response(user, device_name, platform)
 
     def _register_user_sync(
@@ -164,7 +169,7 @@ class AuthService:
     ) -> AuthResponse:
         # The database query and bcrypt verification are both synchronous.
         user = await run_in_threadpool(self._login_user_sync, email, password)
-        # كل Login ناجح بيبدأ جلسة مستقلة، حتى لو الاسم نفس اسم جهاز دخل قبل كده.
+        # Every successful login starts a separate session, even when a previous device label matches.
         return await self._build_auth_response(user, device_name, platform)
 
     def _login_user_sync(self, email: str, password: str) -> User:
@@ -205,7 +210,7 @@ class AuthService:
             self._build_auth_response_sync, user, device_name, platform
         )
 
-        # ما نرجّعش التوكنات قبل حفظ الجلسة؛ وإلا JWT هتوصل للعميل من غير sid نشطة.
+        # Persist the session before returning tokens; otherwise the client receives a JWT without an active sid.
         await self.refresh_token_store.store_session(
             token_hash=token_hash,
             session=session,
@@ -227,7 +232,7 @@ class AuthService:
             user.id, user.token_version, device_name, platform
         )
 
-        # نفس ID اللي جوّه RefreshSession يدخل في الـ JWT، مش ID جديدة للتوكن.
+        # Put the RefreshSession ID into the JWT; do not create a separate session ID for the access token.
         response = self._create_auth_response_sync(user, refresh_token, session.session_id)
         return response, token_hash, session
 
@@ -242,7 +247,7 @@ class AuthService:
             data={
                 "sub": str(user.id),
                 "token_version": user.token_version,
-                # sid لإلغاء جهاز واحد؛ token_version لإلغاء دخول الحساب كله.
+                # sid revokes one session; token_version invalidates sessions across the account.
                 "sid": session_id,
             }
         )
@@ -337,8 +342,8 @@ class AuthService:
             raise BusinessError("Invalid refresh token")
 
         # 7. Create a new access token and return both new tokens to the client.
-        # بنرجّع Access جديدة بنفس sid؛ الـ Access القديمة لنفس الجلسة تفضل صالحة
-        # لحد exp بتاعتها، طالما الجهاز نفسه ما اتلغاش.
+        # Return a new access token with the same sid; earlier access tokens for this session remain valid
+        # until their own expiration, provided that the session itself has not been revoked.
         return await run_in_threadpool(
             self._create_auth_response_sync, user, new_refresh_token, new_session.session_id
         )
@@ -351,13 +356,13 @@ class AuthService:
         session_id: str | None = None,
     ) -> None:
         if session_id is not None:
-            # مسار Logout من الـ API: sid جاية من JWT بعد التحقق، مش من الـ body.
-            # حتى لو الـ Refresh في الـ body قديمة بسبب Rotation، الجهاز يخرج فعلًا.
+            # API logout uses sid from the verified JWT, not a client-supplied body field.
+            # The current session is revoked even if rotation made the supplied refresh token obsolete.
             # Use the verified JWT sid even if the caller's refresh token was
             # already rotated. Logout must revoke this device's access too.
             await self.refresh_token_store.revoke_session_id(user_id, session_id)
             return
-        # مسار الاستدعاءات القديمة من غير sid: إلغاء Refresh محددة بعد فحص الملكية.
+        # Legacy calls without sid revoke a specific refresh token after checking ownership.
         token_hash = self.refresh_token_service.hash_refresh_token(
             refresh_token
         )

@@ -62,6 +62,18 @@ request, and choose a new key for a new operation.
 The basic API works without a Moyasar key. Real sandbox payment verification needs
 your own provider key and the optional payment workers below.
 
+## Wallet statement download
+
+`GET /wallets/{wallet_id}/statement?format=csv&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+downloads the authenticated owner's ledger activity as an Excel-friendly UTF-8 CSV.
+It defaults to the last 30 calendar days, allows at most 366 days and 5,000 entries,
+and returns 413 instead of truncating an oversized export. Missing and unowned
+wallets return the same 404. The download preserves balances and ledger data.
+
+See the [Statement Export guide](WALLET_STATEMENT_GUIDE.md) for columns, date
+semantics, security handling and Swagger testing. This is a ledger activity export,
+not a certified bank statement with reconciled opening/closing balances.
+
 ## Wallet summary
 
 `GET /wallets/summary?base_currency=AED` returns the authenticated user's estimated

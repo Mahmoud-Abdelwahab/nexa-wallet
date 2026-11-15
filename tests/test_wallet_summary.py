@@ -139,7 +139,7 @@ class WalletSummaryMathTests(unittest.TestCase):
         )
 
     def test_route_precedes_wallet_id_path(self):
-        # نفحص Router المحافظ نفسه، بدل الاعتماد على internals بتاعة FastAPI app.
+        # Inspect the wallet router directly instead of relying on FastAPI application internals.
         paths = [r.path for r in wallet_router.routes]
         self.assertLess(paths.index("/wallets/summary"), paths.index("/wallets/{wallet_id}"))
 

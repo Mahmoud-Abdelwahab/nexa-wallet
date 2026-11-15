@@ -1,15 +1,15 @@
-# خريطة Redis الجديدة (الـ token_hash مش التوكن الخام):
+# Redis key map (token_hash is not the raw token):
 #
-# user_refresh_sessions:7  -> {AAA, BBB}        فهرس كل جلسات المستخدم
-# refresh_session:AAA     -> JSON(sid=S1, ...) سجل جلسة جهاز واحد
-# auth_session:7:S1       -> AAA              مؤشر للهاش الحالي لنفس sid
+# user_refresh_sessions:7  -> {AAA, BBB}         Index of the user's refresh hashes
+# refresh_session:AAA     -> JSON(sid=S1, ...)  Record for one login session
+# auth_session:7:S1       -> AAA               Pointer to the current hash for sid S1
 #
 # Login:    S1 -> AAA
-# Rotation: S1 -> BBB، وAAA تتحذف، وsid نفسها ما تتغيّرش
-# Revoke:   نحذف S1 وسجل BBB وعضويته في الفهرس؛ التحقق التالي يرجع 401
+# Rotation: S1 -> BBB; delete AAA while preserving sid.
+# Revoke: remove S1, record BBB and its index membership; subsequent authentication returns 401.
 #
-# وجود المؤشر يسمح بالتحقق من JWT فيها sid من غير ما نعرف Refresh token الخام.
-# الـ Lua scripts تحت تجعل التحقق/الحذف/Rotation ذرّية بالنسبة لبعض داخل Redis.
+# The pointer lets a JWT sid locate its session without knowing the raw refresh token.
+# The Lua scripts make authentication reads, revocation and rotation atomic relative to one another.
 from datetime import datetime, timezone
 
 from redis.asyncio import Redis
@@ -58,8 +58,8 @@ class RefreshTokenRedisStore:
 #    user_refresh_sessions:1 -> {AAA, BBB}
 #    A Redis Set keeps each hash unique and helps find all sessions for a user.
 #
-# المفتاح الثالث auth_session:user:sid يوصلنا للهاش الحالي بعد كل Rotation.
-# الـ pipeline بتحفظ السجل والفهرس والمؤشر مع بعض، مش أول مفتاحين بس.
+# The third key, auth_session:user:sid, resolves the current hash after each rotation.
+# The pipeline stores the record, user index and pointer together, not just the first two keys.
 # Each key has a different job:
 # - refresh_session:{token_hash}: fast lookup of one specific session.
 # - user_refresh_sessions:{user_id}: index of a user's sessions for logout-all.
@@ -88,7 +88,7 @@ class RefreshTokenRedisStore:
             f"user_refresh_sessions:{session.user_id}"
         )
 
-        # ما نخليش المؤشر عايش أطول من الجلسة: الأقصر بين idle TTL والنهاية القصوى.
+        # The pointer must not outlive the session: use the shorter idle or remaining absolute TTL.
         ttl_seconds = min(
             settings.REFRESH_TOKEN_IDLE_DAYS * 24 * 60 * 60,
             int((session.absolute_expires_at - datetime.now(timezone.utc)).total_seconds()),
@@ -110,7 +110,7 @@ class RefreshTokenRedisStore:
                 token_hash,
             )
 
-            # نفس TTL لسجل Refresh والمؤشر؛ وجود sid وحدها مش بديل للسجل الحي.
+            # Give the record and pointer matching TTLs; a sid pointer cannot replace a live refresh record.
             pipe.set(
                 active_session_key(session.user_id, session.session_id),
                 token_hash,
@@ -175,8 +175,8 @@ class RefreshTokenRedisStore:
         )
 
     async def revoke_session_id(self, user_id: int, session_id: str) -> bool:
-        # KEYS[1] فهرس المستخدم، ARGV[1] صاحبه، ARGV[2] الجلسة المطلوب حذفها.
-        # 0 معناها مفيش سجل مطابق (مفقودة/محذوفة/مش ملكه)، وأكبر من صفر نجاح الحذف.
+        # KEYS[1]: user index; ARGV[1]: owner ID; ARGV[2]: session ID to revoke.
+        # Zero means no matching record; a positive result means at least one matching record was revoked.
         result = await self.redis.eval(
             REVOKE_SESSION_SCRIPT, 1, f"user_refresh_sessions:{user_id}",
             str(user_id), session_id,
@@ -184,9 +184,9 @@ class RefreshTokenRedisStore:
         return result > 0
 
     async def get_active_session(self, user_id: int, session_id: str) -> RefreshSession | None:
-        # ليه مش GET للمؤشر وبعدين GET للسجل في طلبين؟
-        # ممكن Rotation تدخل بينهم فتحذف الهاش القديم؛ ده كان هيعمل 401 غلط.
-        # Lua تقرأ الاثنين كخطوة واحدة، فتشوف يا الحالة قبل Rotation يا بعدها.
+        # Why not GET the pointer and then GET the record in two separate round trips?
+        # Rotation could delete the old hash between those reads, causing a false 401.
+        # Lua reads both atomically, seeing either the state before rotation or the state after it.
         # Read the pointer and its record atomically with rotation/revocation.
         value = await self.redis.eval(
             ACTIVE_SESSION_SCRIPT, 1, active_session_key(user_id, session_id),
@@ -195,7 +195,7 @@ class RefreshTokenRedisStore:
         if not value:
             return None
         session = RefreshSession.model_validate_json(value)
-        # فحص إضافي للنهاية القصوى، حتى لو TTL اتضبطت غلط أو السجل اتبقى لأي سبب.
+        # Check absolute expiration too, even if a TTL was misconfigured or a record unexpectedly remains.
         if session.absolute_expires_at <= datetime.now(timezone.utc):
             return None
         return session
@@ -252,14 +252,14 @@ class RefreshTokenRedisStore:
         return result == 1
 
 
-# KEYS[1]	old_key = refresh_session:{old_token_hash}	المفتاح اللي عايزين نتأكد إنه موجود ونمسحه
-# KEYS[2]	new_key = refresh_session:{new_token_hash}	المفتاح الجديد اللي هننشئه
-# KEYS[3]	user_sessions_key = user_refresh_sessions:{user_id}	Set التي تحتوي hashes جلسات المستخدم
-# KEYS[4] auth_session:{user_id}:{sid} مؤشر sid الثابت، وقيمته هاش Refresh الحالية.
-# ARGV[1]	session.model_dump_json()	القيمة اللي هتتخزن — بيانات السيشن (session_id, user_id, absolute_expires_at)
-# ARGV[2]	ttl_seconds	مدة صلاحية المفتاح الجديد (TTL) حسب الوقت المتبقي حتى absolute expiry
-# ARGV[3]	old_token_hash	الهاش القديم الذي سيتم حذفه من Set المستخدم
-# ARGV[4]	new_token_hash	الهاش الجديد الذي سيتم إضافته إلى Set المستخدم
+# KEYS[1]: old_key = refresh_session:{old_token_hash}; the record to verify and consume.
+# KEYS[2]: new_key = refresh_session:{new_token_hash}; the replacement record.
+# KEYS[3]: user_refresh_sessions:{user_id}; the set of the user's refresh hashes.
+# KEYS[4]: auth_session:{user_id}:{sid}; the stable pointer to the current refresh hash.
+# ARGV[1]: session.model_dump_json(); the replacement session data.
+# ARGV[2]: ttl_seconds; expiration capped by the remaining absolute session lifetime.
+# ARGV[3]: old_token_hash; remove it from the user index.
+# ARGV[4]: new_token_hash; add it to the user index.
 
 # Example of the complete flow:
 #
@@ -278,14 +278,14 @@ class RefreshTokenRedisStore:
 
 # This script confirm atomicity and prevent the race condition
 ROTATE_SESSION_SCRIPT = """
--- AAA لازم تكون لسه موجودة والمؤشر لسه بيشير لها؛ الحذف أو Rotation سابقة تمنع التجديد.
+-- The old record and its matching pointer must still exist; prior revocation or rotation blocks reuse.
 local old_value = redis.call("GET", KEYS[1])
 
 if not old_value or redis.call("GET", KEYS[4]) ~= ARGV[3] then
     return 0
 end
 
--- امسح الهاش القديمة من السجل والفهرس قبل حفظ البديلة.
+-- Remove the old record and index membership before storing the replacement.
 redis.call("DEL", KEYS[1])
 redis.call("SREM", KEYS[3], ARGV[3])
 
@@ -297,7 +297,7 @@ redis.call(
     ARGV[2]
 )
 redis.call("SADD", KEYS[3], ARGV[4])
--- نفس sid تشير للهاش الجديدة بنفس TTL؛ ما نعملش هوية جهاز جديدة مع كل Refresh.
+-- Point the same sid to the new hash with its TTL; refresh must not create a new session identity.
 redis.call("SET", KEYS[4], ARGV[4], "EX", ARGV[2])
 
 return 1
@@ -319,7 +319,7 @@ return 1
 # Logout-all is atomic with refresh-token rotation because both operations are
 # Redis Lua scripts executed by Redis one at a time.
 REVOKE_ALL_SESSIONS_SCRIPT = """
--- لكل جهاز: امسح مؤشر sid والسجل، وبعدها احذف فهرس المستخدم كله.
+-- Remove each sid pointer and refresh record, then delete the user index.
 local token_hashes = redis.call("SMEMBERS", KEYS[1])
 
 for _, token_hash in ipairs(token_hashes) do
@@ -340,18 +340,18 @@ return #token_hashes
 
 
 def active_session_key(user_id: int, session_id: str) -> str:
-    # ربط المفتاح بالمستخدم وsid يمنع خلط نفس اسم الجلسة بين حسابين.
+    # Namespace by user ID and sid so identical session IDs cannot mix records across accounts.
     return f"auth_session:{user_id}:{session_id}"
 
 
 ACTIVE_SESSION_SCRIPT = """
--- مؤشر sid -> هاش Refresh الحالية -> سجل الجلسة؛ نرفض لو أي حلقة مفقودة.
+-- sid pointer -> current refresh hash -> session record; reject any missing link.
 local token_hash = redis.call("GET", KEYS[1])
 if not token_hash then return false end
 local raw = redis.call("GET", "refresh_session:" .. token_hash)
 if not raw then return false end
 local session = cjson.decode(raw)
--- لازم السجل نفسه يخص المستخدم وsid اللي الـ JWT الموقعة بتطلبهم.
+-- The record must match both the user and sid requested by the signed JWT.
 if tostring(session.user_id) ~= ARGV[1] or session.session_id ~= ARGV[2] then
     return false
 end
@@ -359,13 +359,13 @@ return raw
 """
 
 REVOKE_TOKEN_SCRIPT = """
--- مسار الإلغاء بالهاش: تحقق من صاحب السجل قبل أي حذف.
+-- Hash-based revocation: verify record ownership before deleting anything.
 local raw = redis.call("GET", KEYS[1])
 if not raw then return 0 end
 local session = cjson.decode(raw)
 if tostring(session.user_id) ~= ARGV[1] then return 0 end
 local active_key = "auth_session:" .. ARGV[1] .. ":" .. session.session_id
--- ما نمسحش مؤشر اتحدّث لهاش مختلفة؛ التوكن القديمة مش تصريح بإلغاء البديلة.
+-- Do not delete a pointer already moved to another hash; an obsolete token cannot revoke its replacement.
 if redis.call("GET", active_key) == ARGV[2] then redis.call("DEL", active_key) end
 redis.call("DEL", KEYS[1])
 redis.call("SREM", KEYS[2], ARGV[2])
@@ -375,7 +375,7 @@ return 1
 # Shares Redis atomicity with ROTATE_SESSION_SCRIPT. No rotated token can
 # survive deletion of its sid, regardless of which operation runs first.
 REVOKE_SESSION_SCRIPT = """
--- نفحص فهرس صاحب الطلب فقط ونحذف السجلات المطابقة له ولـ sid المطلوبة.
+-- Inspect only the requesting user's index and delete records matching both the owner and requested sid.
 local count = 0
 local hashes = redis.call("SMEMBERS", KEYS[1])
 for _, token_hash in ipairs(hashes) do
@@ -392,8 +392,8 @@ for _, token_hash in ipairs(hashes) do
         end
     end
 end
--- حذف المؤشر يقفل وصول الـ Access JWT كمان، مش Refresh token بس.
--- لو Rotation سبقتنا هنلاقي الهاش الجديدة ونمسحها؛ لو سبَقناها هتفشل شروطها.
+-- Deleting the pointer revokes access JWTs as well as refresh tokens.
+-- If rotation ran first, delete its new record; if deletion ran first, rotation fails its preconditions.
 redis.call("DEL", "auth_session:" .. ARGV[1] .. ":" .. ARGV[2])
 return count
 """

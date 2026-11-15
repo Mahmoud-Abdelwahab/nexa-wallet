@@ -1,5 +1,5 @@
-# شاشة الأجهزة: Index المستخدم -> سجلات Refresh -> فلاتر النشاط -> بيانات عرض فقط.
-# الخدمة دي بتنظّم البيانات؛ تنفيذ الحذف الذرّي مسؤولية RefreshTokenRedisStore.
+# Device list: user index -> refresh records -> active-session filters -> display fields only.
+# This service organizes display data; RefreshTokenRedisStore performs atomic revocation.
 from datetime import datetime, timezone
 
 from redis.asyncio import Redis
@@ -20,12 +20,12 @@ class DeviceSessionsService:
     async def list_sessions(
         self, user_id: int, token_version: int, current_session_id: str
     ) -> list[DeviceSessionResponse]:
-        # Redis بيمسح السجل المنتهي تلقائيًا، لكن الهاش ممكن يفضل في الـ Set؛ ننضّفه.
+        # Redis expires records automatically, but their hashes may remain in the set; remove stale entries.
         await self.store.cleanup_stale_sessions(user_id)
         hashes = list(await self.redis.smembers(f"user_refresh_sessions:{user_id}"))
         if not hashes:
             return []
-        # ندعم Redis سواء بيرجع bytes أو str، وMGET تجيب السجلات في طلب واحد.
+        # Support both bytes and str responses; MGET fetches all records in one round trip.
         hashes = [h.decode() if isinstance(h, bytes) else h for h in hashes]
         records = await self.redis.mget([f"refresh_session:{h}" for h in hashes])
         candidates = []
@@ -34,19 +34,19 @@ class DeviceSessionsService:
             if not raw:
                 continue
             session = RefreshSession.model_validate_json(raw)
-            # نتأكد من الملكية والنسخة والنهاية القصوى، حتى لو سجل قديم لسه موجود.
+            # Check ownership, account version and absolute expiration even when an old record still exists.
             if (session.user_id == user_id and session.token_version == token_version
                     and session.absolute_expires_at > now):
                 candidates.append((token_hash, session))
         if not candidates:
             return []
-        # وجود سجل Refresh وحده مش كفاية؛ لازم sid تشير للهاش الحالي فعلًا.
-        # سجل من قبل تحديث sid أو سجل اتلغى ما يظهرش كجهاز Active.
+        # A refresh record alone is insufficient; its sid must point to the current hash.
+        # Pre-sid records and revoked sessions must not appear as active devices.
         pointers = await self.redis.mget([
             active_session_key(user_id, session.session_id) for _, session in candidates
         ])
-        # Dictionary بالمفتاح sid تمنع تكرار نفس الجلسة في نتيجة العرض.
-        # القائمة snapshot؛ Rotation متزامنة قد تخفي عنصر مؤقتًا، مش تسمح بدخول ملغي.
+        # Keying the result by sid prevents duplicate rows for the same login session.
+        # This list is a snapshot: concurrent rotation may briefly hide a row but cannot authorize a revoked session.
         sessions = {}
         for (token_hash, session), pointer in zip(candidates, pointers):
             if isinstance(pointer, bytes):
@@ -55,7 +55,7 @@ class DeviceSessionsService:
                 continue
             sessions[session.session_id] = DeviceSessionResponse(
                 session_id=session.session_id,
-                # sid ثابتة خلال Rotation، فتمييز الجهاز الحالي يفضل صحيح بعد التجديد.
+                # sid survives rotation, so current-session identification remains correct after refresh.
                 is_current=session.session_id == current_session_id,
                 device_name=session.device_name,
                 platform=session.platform,
@@ -65,6 +65,6 @@ class DeviceSessionsService:
         return list(sessions.values())
 
     async def revoke_session(self, user_id: int, session_id: str) -> bool:
-        # نمرّر user_id من المستخدم الموثّق، عشان ما نقدرش نحذف جلسة حساب تاني.
-        # Lua تمسح سجل الجهاز والهاش من الـ Index ومؤشر sid كعملية واحدة.
+        # Use the authenticated user ID so a caller cannot revoke another account's session.
+        # Lua removes the device record, index membership and sid pointer atomically.
         return await self.store.revoke_session_id(user_id, session_id)

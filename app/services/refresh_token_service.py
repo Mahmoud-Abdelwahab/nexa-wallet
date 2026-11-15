@@ -46,8 +46,8 @@ class RefreshTokenService:
 
         now = datetime.now(timezone.utc)
 
-        # Login جديد: sid عشوائية مستقلة عن قيمة Refresh token.
-        # device_name/platform للعرض، والتاريخين يبدأوا بنفس توقيت السيرفر UTC.
+        # New login: generate a random sid independently of the refresh token.
+        # device_name/platform are display metadata; both timestamps start at the server's current UTC time.
         session = RefreshSession(
             # session_id !=  refresh_token it is just a random id unique for each session usefull when user_id logged in more than one devcie
             session_id=secrets.token_urlsafe(16),
@@ -106,10 +106,10 @@ class RefreshTokenService:
             refresh_token
         )
 
-        # قبل: sid=S1, hash=AAA, created_at=T0, last_seen_at=T1
-        # بعد: sid=S1, hash=BBB, created_at=T0, last_seen_at=دلوقتي
-        # بنغيّر بيانات التوكن، مش هوية الجهاز أو بداية الجلسة أو نهايتها القصوى.
-        # الدالة دي تجهّز القيم فقط؛ الـ Redis Store هي اللي تحفظ Rotation ذريًّا.
+        # Before: sid=S1, hash=AAA, created_at=T0, last_seen_at=T1
+        # After:  sid=S1, hash=BBB, created_at=T0, last_seen_at=now
+        # Change token data while preserving session identity, creation time and absolute expiration.
+        # This method prepares values only; the Redis store persists the rotation atomically.
         new_session = RefreshSession(
             session_id=session.session_id,  # same as the old one
             user_id=session.user_id,  # same no change

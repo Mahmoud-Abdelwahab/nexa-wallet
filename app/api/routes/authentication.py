@@ -1,8 +1,8 @@
-# الـ Router بياخد Request متحققة من الـ Schema ويوصلها للخدمة المناسبة:
-# Login/Register -> AuthService -> توكنات + جلسة جديدة
-# GET sessions   -> get_current_user -> DeviceSessionsService -> قائمة أجهزة
-# DELETE sid     -> get_current_user -> DeviceSessionsService -> حذف جهاز واحد
-# فحص get_current_user بيشمل sid، فالجهاز الملغي مش هيقدر يستخدم APIs الإدارة دي.
+# The router passes schema-validated requests to the appropriate service:
+# Login/Register -> AuthService -> token pair + new session
+# GET sessions   -> get_current_user -> DeviceSessionsService -> device list
+# DELETE sid     -> get_current_user -> DeviceSessionsService -> revoke one session
+# get_current_user checks sid, so revoked sessions cannot use the management endpoints either.
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from redis.exceptions import RedisError
 from typing import Annotated
@@ -62,7 +62,7 @@ async def register(
             password=request.password,
             mobile=request.mobile,
             date_of_birth=request.date_of_birth,
-            # بيانات الجهاز اختيارية، ومحدودة الطول والمنصة في الـ Request Schema.
+            # Optional device metadata is length-limited and platform-validated by the request schema.
             device_name=request.device_name,
             platform=request.platform,
         )
@@ -86,7 +86,7 @@ async def login(
         return await service.login_user(
             email=request.email,
             password=request.password,
-            # اسم الجهاز بيتحفظ للجلسة الجديدة، ومش بنستخدمه كدليل هوية أو ملكية.
+            # Save the device label for display; it does not establish identity or ownership.
             device_name=request.device_name,
             platform=request.platform,
         )
@@ -114,13 +114,13 @@ async def refresh(
     except BusinessError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            # الموبايل يمسح التوكنات عند الكود ده، بدل تكرار Refresh فاشلة للأبد.
-            # يشمل الملغية/المنتهية/غير الصالحة وإعادة استخدام Refresh قديمة.
+            # The client clears tokens on this code instead of repeatedly retrying an invalid refresh.
+            # Covers revoked, expired, invalid and previously consumed refresh tokens.
             detail=SESSION_REVOKED_DETAIL,
         )
 
     except RedisError:
-        # عطل خدمة مؤقت: ما نرجّعش SESSION_REVOKED فتخرج كل الأجهزة بسبب العطل.
+        # A temporary outage must not return SESSION_REVOKED and force users to log out.
         raise HTTPException(503, {
             "code": "AUTH_SERVICE_UNAVAILABLE",
             "message": "Authentication is temporarily unavailable. Please retry.",
@@ -140,7 +140,7 @@ async def logout(
     await service.logout(
         refresh_token=request.refresh_token,
         user_id=current_user.id,
-        # الـ dependency حطّت هنا sid الموثّقة، فنلغي جلسة صاحب الطلب نفسه.
+        # The dependency provided a verified sid; revoke the requesting session itself.
         session_id=http_request.state.session_id,
     )
 
@@ -158,8 +158,8 @@ async def logout_all(
 
 @router.get("/sessions", response_model=list[DeviceSessionResponse])
 async def get_sessions(request: Request, current_user: User = Depends(get_current_user)):
-    # user_id والنسخة من حساب موثّق؛ العميل ما يختارش User تاني يعرض أجهزته.
-    # response_model يحدّد حقول العرض فقط، من غير الهاش أو Refresh token.
+    # Use the authenticated account's ID and version; the client cannot select another user.
+    # response_model exposes display fields only, without refresh tokens or hashes.
     try:
         return await DeviceSessionsService(redis_client).list_sessions(
             current_user.id, current_user.token_version, request.state.session_id
@@ -174,9 +174,9 @@ async def delete_session(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
-    # DELETE /auth/sessions/S1 -> نبحث داخل جلسات current_user فقط.
-    # إخفاء الزر في الموبايل مش حماية كفاية؛ السيرفر يرفض حذف الجلسة الحالية.
-    # sid جاية من JWT الموثّقة في dependency؛ الخروج من الجهاز الحالي يكون بـ Logout.
+    # DELETE /auth/sessions/S1 searches only within the authenticated user's sessions.
+    # Hiding a mobile button is insufficient; enforce current-session deletion protection on the server.
+    # Use sid from the verified JWT; signing out the current session belongs to logout.
     if session_id == request.state.session_id:
         raise HTTPException(400, {
             "code": "CURRENT_SESSION_DELETE_FORBIDDEN",

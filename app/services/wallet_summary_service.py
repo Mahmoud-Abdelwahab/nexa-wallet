@@ -1,7 +1,7 @@
 """Pure conversion logic. No balance updates, transfers or ledger writes."""
-# مثال: المصدر يقول 1 AED = 0.25 USD، ومحفظة USD رصيدها 100.
-# قيمة المحفظة بالدرهم = 100 / 0.25 = 400 AED، مش 100 * 0.25.
-# نحسب بـ Decimal، ونقرّب كل سطر للعرض، وبعدها نجمع السطور المقربة لنفس Total الشاشة.
+# Example: the provider reports 1 AED = 0.25 USD, and a USD wallet holds 100.
+# The wallet value in AED is 100 / 0.25 = 400 AED, not 100 * 0.25.
+# Use Decimal, round each displayed line, then sum those lines so the UI total matches.
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.enums import Currency
@@ -50,7 +50,7 @@ def calculate_wallet_summary(
                 DISPLAY_RATE_PRECISION, rounding=ROUND_HALF_UP,
             )
         except ArithmeticError:
-            # بيانات مصدر غير قابلة للحساب لازم ترجع 503، مش 500 أو Total جزئي.
+            # Uncomputable provider data must return 503, not 500 or a partial total.
             raise ExchangeRateUnavailable() from None
         lines.append(WalletConversionResponse(
             wallet_id=wallet.id,

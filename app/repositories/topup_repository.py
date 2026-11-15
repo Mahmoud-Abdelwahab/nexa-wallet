@@ -34,7 +34,7 @@ class TopUpRepository:
             amount_minor=topup.amount_minor, currency=topup.currency,
             moyasar_payment_id=topup.moyasar_payment_id,
             idempotency_key=topup.idempotency_key, status=topup.status,
-        ).on_conflict_do_nothing( # لو فيه سجل بالفعل بنفس المستخدم والمفتاح، ما تضيفش نسخة تانية وما تعدّلش السجل القديم.
+        ).on_conflict_do_nothing( # If this user/key already exists, neither insert a duplicate nor modify the existing record.
             index_elements=["user_id", "idempotency_key"],
         ).returning(TopUp)
         created = self.db.scalar(stmt)
