@@ -218,7 +218,7 @@ class DeviceSessionRedisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 204)
         self.assertEqual(response.content, b"")
         # The same authentication dependency guards every protected route.
-        for path in ("/users/me", "/wallets", "/auth/sessions"):
+        for path in ("/users/me", "/wallets", "/wallets/summary", "/auth/sessions"):
             response = await self.client.get(path, headers=self.headers(samsung))
             self.assertEqual(response.status_code, 401)
             self.assertEqual(response.json()["detail"]["code"], "SESSION_REVOKED")

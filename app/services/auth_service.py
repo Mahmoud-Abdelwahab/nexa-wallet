@@ -19,6 +19,7 @@ from app.repositories import UserRepository, WalletRepository
 from app.core.security import create_access_token, hash_password, verify_password
 from app.infrastructure.redis.refresh_token_redis_store import RefreshTokenRedisStore
 from app.schemas.authentication import AuthResponse
+from app.schemas.device_session import DevicePlatform
 from app.schemas.refresh_session import RefreshSession
 from app.services.refresh_token_service import RefreshTokenService
 
@@ -81,7 +82,7 @@ class AuthService:
         mobile: str,
         date_of_birth: date,
         device_name: str = "Unknown device",
-        platform: str = "Unknown",
+        platform: DevicePlatform = "Unknown",
     ) -> AuthResponse:
         # Keep SQLAlchemy and password hashing off the event loop.
         user = await run_in_threadpool(
@@ -159,7 +160,7 @@ class AuthService:
     # _build_auth_response -> store Redis session -> return AuthResponse
     async def login_user(
         self, email: str, password: str,
-        device_name: str = "Unknown device", platform: str = "Unknown",
+        device_name: str = "Unknown device", platform: DevicePlatform = "Unknown",
     ) -> AuthResponse:
         # The database query and bcrypt verification are both synchronous.
         user = await run_in_threadpool(self._login_user_sync, email, password)
@@ -196,7 +197,7 @@ class AuthService:
     #      v
     # Return AuthResponse
     async def _build_auth_response(
-        self, user: User, device_name: str = "Unknown device", platform: str = "Unknown"
+        self, user: User, device_name: str = "Unknown device", platform: DevicePlatform = "Unknown"
     ) -> AuthResponse:
         # A committed ORM object may reload attributes on access. Read and
         # serialize it in a worker too, before awaiting Redis on the event loop.
@@ -215,7 +216,7 @@ class AuthService:
         self,
         user: User,
         device_name: str = "Unknown device",
-        platform: str = "Unknown",
+        platform: DevicePlatform = "Unknown",
     ) -> tuple[AuthResponse, str, RefreshSession]:
 
         (

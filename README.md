@@ -62,6 +62,18 @@ request, and choose a new key for a new operation.
 The basic API works without a Moyasar key. Real sandbox payment verification needs
 your own provider key and the optional payment workers below.
 
+## Wallet summary
+
+`GET /wallets/summary?base_currency=AED` returns the authenticated user's estimated
+portfolio value in AED, USD or EUR, with each wallet's original balance, converted
+amount, rate and publication date. It uses Decimal and caches public Frankfurter
+v2 reference rates in Redis for six hours. Missing/invalid rates return 503 rather
+than a partial total. This does not change balances, transfers or ledger entries.
+
+See the [Wallet Summary guide](WALLET_SUMMARY_GUIDE.md) for the response, calculation
+direction, failure handling and tests. The endpoint requires an active `sid` like
+the other protected wallet routes.
+
 ## Device sessions
 
 Login and registration accept optional `device_name` and `platform` metadata.

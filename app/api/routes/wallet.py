@@ -3,18 +3,24 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
+from app.core.enums import Currency
 from app.core.errors import BusinessError
 from app.core.redis import redis_client
 from app.database import get_db
 from app.models.user import User
+from app.integrations.frankfurter_client import ExchangeRateUnavailable, FrankfurterClient
+from app.repositories.wallet_repository import WalletRepository
 from app.schemas.ledger import LedgerEntryResponse
 from app.schemas.recipient import RecipientLookupRequest, RecipientLookupResponse
 from app.schemas.wallet import CreateWalletRequest, WalletResponse
+from app.schemas.wallet_summary import WalletSummaryResponse
 from app.services.recipient_rate_limit import allow_recipient_lookup
 from app.services.recipient_service import RecipientService
 from app.services.wallet_service import WalletService
+from app.services.wallet_summary_service import calculate_wallet_summary
 from app.api.routes.dependencies import get_current_user
 
 
@@ -68,6 +74,28 @@ def get_wallets(
     return service.get_user_wallets(
         user_id=current_user.id
     )
+
+
+# GET /wallets/summary لازم تسبق المسار الديناميكي /{wallet_id}.
+# User wallets (DB/thread) -> needed currencies -> FX cache/API -> Decimal summary.
+# ده عرض تقديري فقط؛ مفيش تعديل balances أو ledger أو تنفيذ صرف عملة.
+@router.get("/summary", response_model=WalletSummaryResponse)
+async def get_wallet_summary(
+    base_currency: Currency = Currency.AED,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    wallets = await run_in_threadpool(
+        WalletRepository(db).get_by_user_id, current_user.id
+    )
+    needed = {wallet.currency for wallet in wallets if wallet.currency != base_currency}
+    try:
+        # لو كل المحافظ بنفس عملة العرض أو مفيش محافظ، مش محتاجين مصدر أسعار خارجي.
+        rates = await FrankfurterClient(redis_client).get_rates(base_currency, needed) if needed else {}
+        return calculate_wallet_summary(wallets, base_currency, rates)
+    except ExchangeRateUnavailable:
+        # ما نعرضش Total جزئي يوحي للمستخدم إن ده إجمالي فلوسه بالكامل.
+        raise HTTPException(503, "Reference exchange rates are temporarily unavailable") from None
 
 
 # GET /wallets/{wallet_id}

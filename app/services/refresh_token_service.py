@@ -4,6 +4,7 @@ import secrets
 import hashlib
 
 from app.schemas.refresh_session import RefreshSession
+from app.schemas.device_session import DevicePlatform
 from app.core.config import settings
 
 # it's responsability is :-
@@ -37,7 +38,7 @@ class RefreshTokenService:
         user_id: int,
         token_version: int = 0,
         device_name: str = "Unknown device",
-        platform: str = "Unknown",
+        platform: DevicePlatform = "Unknown",
     ) -> tuple[str, str, RefreshSession]:
         """Create the initial token, its hash, and a new refresh session. used in login and register endpoints"""
 

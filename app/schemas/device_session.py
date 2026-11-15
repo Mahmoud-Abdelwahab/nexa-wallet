@@ -7,11 +7,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# نفس النوع في الـ Schema والخدمات؛ str وحدها تسمح نظريًا بقيم خارج القائمة.
+DevicePlatform = Literal["iOS", "Android", "Web", "Unknown"]
+
+
 class DeviceMetadata(BaseModel):
     # اسم الجهاز والمنصة جايين من العميل للعرض فقط؛ مش إثبات لهوية الجهاز.
     # Field بيمنع الاسم الفاضي أو الطويل، وLiteral بيمنع منصات خارج القيم المحددة.
     device_name: str = Field(default="Unknown device", min_length=1, max_length=100)
-    platform: Literal["iOS", "Android", "Web", "Unknown"] = "Unknown"
+    platform: DevicePlatform = "Unknown"
 
 
 class DeviceSessionResponse(BaseModel):
@@ -21,7 +25,7 @@ class DeviceSessionResponse(BaseModel):
     # الموبايل يعلّم الجهاز الحالي ويخفي زر الحذف لما القيمة تكون True.
     is_current: bool
     device_name: str
-    platform: str
+    platform: DevicePlatform
     # None يسمح بقراءة بيانات قديمة ماكانش فيها تواريخ، لو باقي شروط النشاط متحققة.
     created_at: datetime | None
     last_seen_at: datetime | None
