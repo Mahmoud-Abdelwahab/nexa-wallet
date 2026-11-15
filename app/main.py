@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from app.api.error_handlers import internal_error_handler, validation_error_handler
 from app.api.routes.health import router as health_router
+from app.api.routes.application import router as application_router
 from app.api.routes.authentication import router as auth_router
 from app.api.routes.password_reset import router as password_reset_router
 from app.api.routes.users import router as users_router
@@ -46,6 +47,7 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(Exception, internal_error_handler)
 
 app.include_router(health_router)
+app.include_router(application_router)
 app.include_router(auth_router)
 app.include_router(password_reset_router)
 app.include_router(users_router)

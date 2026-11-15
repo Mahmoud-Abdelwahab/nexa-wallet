@@ -9,6 +9,10 @@ x-app: &app
     DATABASE_URL: postgresql+psycopg://nexa:nexa_password@postgres:5432/nexa_wallet_dev
     REDIS_URL: redis://redis:6379/0
     RECIPIENT_LOOKUP_DAILY_LIMIT: ${RECIPIENT_LOOKUP_DAILY_LIMIT:-50}
+    APP_NAME: ${APP_NAME:-Nexa Wallet}
+    APP_DESCRIPTION: ${APP_DESCRIPTION:-Manage your wallets, send transfers, and review your transaction history.}
+    SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+    SUPPORT_URL: ${SUPPORT_URL:-}
     SMTP_HOST: ${SMTP_HOST:-mailpit}
     SMTP_PORT: ${SMTP_PORT:-1025}
     SMTP_USERNAME: ${SMTP_USERNAME:-}

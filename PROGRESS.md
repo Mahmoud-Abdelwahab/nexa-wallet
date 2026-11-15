@@ -1,501 +1,223 @@
-# Nexa Wallet — Progress Log
+# Nexa Wallet — Implementation and Handoff Status
 
-A running log of everything built in this project so far. Updated after every new step.
+Last updated: **2026-11-15 (Asia/Dubai)**.
+Working branch: **`adding-new-support-apis`**.
 
-Last reviewed: **2026-10-25 (Asia/Dubai)** against the current source, Git history through `e4885d8`, and local notes in `terminal.md`.
+This file describes the current source and the checks actually performed. Older
+transfer/payment reports remain useful historical evidence, but are not substitutes
+for the latest implementation or a final production review.
 
-Learning reference: [Business and Design Guide](BUSINESS_GUIDE.md) explains the business rules, table relationships, implementation decisions, and current limitations in English.
+## Current state
 
----
+The planned backend MVP features are implemented and ready for teammate setup,
+local demos and technical review. This is a sandbox/portfolio backend; the mobile
+application and final production integration/security review remain outstanding.
 
-## 🎯 Project Goal
+| Area | Status | Evidence / reference |
+| --- | --- | --- |
+| User registration/login/profile | Implemented | Auth routes, execution-boundary/error tests and fresh Docker HTTP checks |
+| Access and refresh credentials | Implemented | JWT version checks, refresh rotation, Redis Lua and session tests |
+| Password recovery | Implemented | Single-use reset tokens, SMTP, email/IP limits, failure-path tests and real Mailpit flow |
+| Wallet ownership and currencies | Implemented | AED/USD/EUR, scoped reads and one-wallet-per-user/currency constraint |
+| Internal transfers | Implemented | Idempotency, shared lock order, Decimal validation, paired ledger entries and one commit |
+| Transaction and ledger history | Implemented | Owned history and paginated ledger entries |
+| Moyasar sandbox top-ups | Implemented | Idempotent creation, durable events, verification worker, leases, retries and reconciliation |
+| Recipient verification | Implemented | Masked username, ownership/status/currency checks, 5/minute and 50/24-hour user limits |
+| Device sessions | Implemented | `sid`, active-pointer checks, `is_current`, current-session deletion guard and cross-device revocation |
+| Wallet Summary + FX | Implemented | Decimal math, reference dates, six-hour cache, live AED/USD/EUR provider/cache verification |
+| Statement Export | Implemented | Owned CSV, inclusive dates, 366-day/5,000-row limits, escaping and attachment headers |
+| Public About + Support | Implemented | `/app/about`, `/app/support`, validated optional contacts and six HTTP/configuration tests |
+| Docker handoff | Verified locally | Fresh isolated services/migrations, Linux test image and live HTTP flow |
+| Mobile client | Not implemented here | Follow the documented JWT/session error contract and feature APIs |
+| Final integration/security release review | Pending | Target-environment review and remaining items below |
 
-- Learn Backend development with FastAPI from scratch to Senior Backend Engineer level.
-- Build a real portfolio project (Digital Wallet) covering the skills required for modern Backend roles.
+Support is a public contact-information endpoint, not a support-ticket submission
+system. At the owner's request, the environment template uses `support@example.com`
+and `https://example.com/support` as dummy UI-test contacts. They do not reach a
+Nexa support service. Empty `SUPPORT_EMAIL`/`SUPPORT_URL` produce `available: false`;
+replace the demo values with actual public contacts before real use.
 
-## 🧱 Tech Stack
+## Latest verification — 2026-11-15
 
-**Backend:** Python 3.13+, FastAPI, SQLAlchemy 2.x, PostgreSQL, Psycopg 3, Redis 7, redis-py asyncio, Pydantic Settings, python-jose, Passlib (bcrypt), Alembic
-**Package/Env Manager:** uv
-**Local Infrastructure:** Docker Compose (PostgreSQL 16 + Redis 7)
-**Frontend (later):** SwiftUI
+### Automated tests
 
----
+| Run | Result | Scope |
+| --- | --- | --- |
+| Local `DEBUG=false .venv/bin/python -m pytest tests -q` | **158 passed, 13 skipped** | Unit/HTTP tests; optional real Redis tests intentionally disabled |
+| Fresh Docker test image with both Redis test URLs enabled | **171 passed, no skips** | Includes real Redis session/rate-limit scripts, API authorization and race checks |
+| `scripts/test_topup_concurrency.py --run-local` on disposable PostgreSQL | **Passed** | Concurrent posting/creation, conflicting requests and lease recovery with fake provider data |
 
-## 🏗️ Core Architecture Decisions
+The suite also reported 62 passing subtests. Two dependency deprecation warnings
+remain: an anyio pytest-plugin alias and Starlette's httpx TestClient integration.
+No failing tests were observed in these runs. Tests ran locally; this is not a
+claim that a GitHub CI test workflow passed. The current GitHub workflow performs
+Codex PR review and requires its configured repository secret.
 
-Transaction execution, gateway integration, and row-locking below are design decisions for future implementation; the current code contains the domain models and wallet creation/read APIs.
+### Fresh Docker startup and HTTP smoke checks
 
-- **Transaction Flow:** `Pending → Bank/Payment Gateway → Success or Failed`. Balance is never debited/credited until the operation succeeds.
-- **Ledger:** the final source of truth for balances. The `Transaction` table represents the workflow; `LedgerEntry` represents the actual financial truth (Debit/Credit).
-- **Currency:** transactions and ledger entries carry `amount` + `currency`; wallets carry `balance` + `currency`. Supported currencies are currently AED, USD, and EUR.
-- **Operation types:** `TRANSFER`, `TOP_UP`, `WITHDRAW` are represented in `LedgerEntryType`, alongside `FEE`, `TAX`, and `CASHBACK`. The current `Transaction` model does not yet have a transaction-type column.
-- **Locking:** row locks are used while executing a transfer, but released before waiting on the bank's response — the lock is released right after the Pending transaction is created.
-- **Wallet uniqueness:** `UniqueConstraint(user_id, currency)` — a user can have multiple wallets, but only one per currency.
-- **User identity fields:** `email` and `mobile` are unique identifiers. `username` is intentionally **not** unique — it's just a display name, not used to look up or identify a user.
+A separate Compose project (`nexa-handoff-check`) used fresh PostgreSQL/Redis
+volumes and alternate localhost ports. Existing user databases, wallets and
+provider credentials were not used. Migrations and API startup succeeded.
 
----
+Verified using disposable accounts over HTTP:
 
-## 📚 Concepts Learned
+1. Health, Redis diagnostic, Swagger, public About and unconfigured Support (the
+   isolated smoke run used blank contacts; demo contacts were configured afterward).
+2. Registration, default zero-balance AED wallet and active-session profile access.
+3. Creation of USD/EUR wallets and live reference FX summary for all three wallets.
+4. CSV download with BOM and `no-store`, and cross-user download rejection.
+5. Masked recipient lookup and rejection of an unfunded transfer.
+6. `is_current`, current-session deletion protection, remote device revocation and
+   immediate `SESSION_REVOKED` when the deleted device attempted CSV download.
+7. Refresh rotation and successful use of the replacement access token.
+8. Actual SMTP delivery into local Mailpit, single-use reset-token consumption,
+   account-wide invalidation and login with the new password.
 
-### FastAPI Request Lifecycle
-`HTTP Request → Uvicorn → FastAPI → Router → Endpoint → Response`
-The Router looks up the matching Endpoint; if no route matches, FastAPI returns 404 automatically.
+The disposable stack is removed after verification. SMTP was local-only. The FX
+request used the public provider, but payment-provider responses in posting tests
+were mocked. This did not charge a card, prove live Moyasar settlement or complete
+a production security audit.
 
-### Dependency Injection
-`Depends(...)` — FastAPI injects dependencies automatically (used for `get_db`, `get_current_user`, and every service).
+### PostgreSQL concurrency checks
 
-### Configuration
-`app/core/config.py` centralizes all settings (Single Source of Truth) instead of reading `.env` everywhere. `.env` is local/development-only; production should rely on a Secrets Manager (AWS/Azure).
+The existing opt-in test created a temporary schema and removed it afterward:
 
-### SQLAlchemy: Engine, Session, Connection Pool
-- **Engine**: an app-level singleton, responsible for the Database URL/Driver/Dialect/Pool. It never commits or rolls back.
-- **SessionLocal (sessionmaker)**: a factory that creates new Session objects on demand — it does not create a session at definition time.
-- **Connection Pool**: a Session only borrows a connection from the pool on its first actual query (**Lazy Connection Acquisition**), not the moment it's created.
-- **`get_db()`**: uses `yield` instead of `return` so `db.close()` runs after the endpoint finishes (a dependency with cleanup). `close()` returns the connection to the pool — it does not destroy the Session object.
+- Two workers with distinct events for one payment produced one Transaction and
+  one ledger credit, with balance moving from 50 to 150 exactly once.
+- Three concurrent identical TopUp creations returned one TopUp and Payment ID.
+- Concurrent requests with the same key and changed data produced one winner and
+  one conflict, without a credit.
+- Expired leases were reclaimed and stale workers could not post a credit.
 
-### ORM / Declarative Base
-- **`class Base(DeclarativeBase): pass`** — the official SQLAlchemy 2.0 pattern (not the legacy `declarative_base()`). Every model inherits from it so there's one shared Metadata registry.
-- **`Mapped[int]`**: a type annotation telling SQLAlchemy this attribute is an ORM-mapped column, not a plain Python attribute.
-- **`mapped_column(...)`**: defines the actual column properties (primary_key, unique, nullable, ForeignKey...).
-- **`relationship()` + forward references (`Mapped["Wallet"]`)**: avoid circular imports between model files. Resolution happens later, at mapper-configuration time, via a shared registry that only knows about classes that have actually been imported somewhere — hence all models must be imported together in one `__init__.py`.
-- **`TYPE_CHECKING`**: a block that only runs during static analysis (Pylance/mypy), never at runtime — lets the editor resolve forward references without causing a real circular import.
+Previous transfer/PostgreSQL verification is recorded in
+[TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md). The latest handoff smoke
+check exercised insufficient-funds rejection, not a new funded-transfer race run.
 
-### Alembic (Migrations)
-- A migration file is a "recipe" with `upgrade()` and `downgrade()`.
-- An `alembic_version` table inside the database tracks the last applied migration.
-- `alembic revision --autogenerate -m "..."` diffs current models against the database and generates the difference automatically.
-- Before production: it's fine to wipe everything and start from one clean migration. After production: every model change becomes a new migration on top of the previous one — never a reset.
+## Current architecture
 
-### Authentication & Security
-- **Password Hashing (bcrypt via Passlib)**: passwords are hashed before storage and can never be reversed back to plaintext.
-- **JWT ≠ Encryption**: the token (`HS256`) is **signed**, not **encrypted**. The Header and Payload are readable by anyone via plain Base64 decoding, no secret required. The `secret_key` is only used to compute/verify the **Signature** (the third part) — proving the token was genuinely issued by the server and untampered, not hiding its contents. Never put sensitive data in a JWT payload.
-- **User Enumeration Prevention**: a single generic error message ("Invalid email or password") covers two different cases (email not found / wrong password) so nobody can probe the API to discover which emails are registered.
-- **Timing Side-Channel**: even with an identical error message, execution time can still differ (bcrypt is deliberately slow). Fix: always run `verify_password` even when the user doesn't exist, against a fixed `DUMMY_PASSWORD_HASH`, so response time stays roughly constant either way.
-- **When to unify an error message vs. not:** unify it only when the difference would leak a server-side/database secret (like the login case). If the difference is something the client already knows (e.g. "no token sent" vs. "sent an invalid token"), there's no need to unify it.
-- **`HTTPBearer(auto_error=False)`**: disables FastAPI's automatic behavior (which returns `403`, not `401`, when there's no Authorization header). Once disabled, **you must add the manual check yourself** (`if credentials is None: raise HTTPException(401)`) — otherwise the code crashes (`500`) because `credentials` becomes `None` and nothing handles it.
-- **`try/except` only protects the lines physically inside it** — any line before `try:` has no protection at all, even if it looks close in the code. The same applies to code placed *inside* an `except` block after a `raise`: it's unreachable dead code, since `raise` exits immediately.
-- **JWT token invalidation via `token_version`**: JWTs are stateless — a valid signature stays valid until expiry no matter what changes server-side (e.g. a password change). To force old tokens to stop working, the `User` model has a `token_version` counter. It's embedded in the JWT payload at login/register time, and `get_current_user` compares it against the user's *current* `token_version` in the database on every request. `change_password` increments `user.token_version`, which immediately invalidates every previously-issued token for that user — they must log in again to get a new one.
-
-### Refresh Tokens and Redis
-- Refresh tokens are opaque random values. Only their SHA-256 hashes are stored in Redis.
-- `refresh_session:{token_hash}` stores the session JSON with a 30-day idle TTL.
-- `user_refresh_sessions:{user_id}` is a Redis Set containing all refresh-token hashes for that user.
-- Refresh rotation atomically removes the old hash and session, then stores the new session and hash.
-- `logout-all` uses a Lua script and is atomic with rotation, preventing orphaned sessions.
-- The session keeps its `session_id`, `user_id`, and absolute expiry during rotation. TTL is limited by the shorter of idle expiry and remaining absolute lifetime (90 days).
-- The MVP performs opportunistic cleanup of stale hashes when storing a new session.
-
-#### Why Each Refresh-Token Step Exists
-1. **Generate a random opaque token:** the client receives a high-entropy value that does not expose the user id or session data.
-2. **Hash the token with SHA-256:** Redis stores only `H(token)`, so a Redis leak does not directly reveal usable refresh tokens.
-3. **Store the session by hash:** `refresh_session:{token_hash}` gives a direct lookup from the presented token to its session metadata.
-4. **Maintain a per-user Redis Set:** `user_refresh_sessions:{user_id}` makes it possible to find and revoke every device session during logout-all.
-5. **Use `SET` plus `SADD`:** `SET` stores the session JSON and applies the individual idle TTL; `SADD` stores the hash in the user's index. They have different responsibilities.
-6. **Use a transactional pipeline when storing:** the session key and user index are written together, avoiding an incomplete index when both writes succeed or fail as one transaction.
-7. **Hash the incoming refresh token during refresh:** the raw token is never used as a Redis key; only its deterministic hash is looked up.
-8. **Load the old session:** a missing key means the token is invalid, revoked, expired, or already consumed.
-9. **Calculate the remaining TTL:** `min(idle_ttl, remaining_absolute_lifetime)` prevents Redis from keeping a rotated session beyond its 90-day absolute expiry.
-10. **Load the user from `session.user_id`:** the user id comes from trusted session data, not from the request body. We still verify that the user exists before issuing new tokens.
-11. **Create a rotated token with the same session identity:** `session_id`, `user_id`, and `absolute_expires_at` remain stable while the raw refresh token and hash change.
-12. **Rotate with Lua:** the old key is checked and removed, the old hash is removed from the Set, and the new key/hash are created atomically. This makes the old token single-use and prevents concurrent reuse.
-13. **Revoke one device:** delete its session key and remove only its hash from the user Set; other devices remain active.
-14. **Revoke all devices with Lua:** the script reads the current Set, deletes every session key, and deletes the Set in one Redis operation. This prevents rotation from creating an orphaned session between `SMEMBERS` and `DEL`.
-15. **Increment `token_version` on logout-all:** access JWTs are stateless, so the version check invalidates every old access token immediately without changing per-device logout behavior.
-16. **Clean stale hashes opportunistically:** Redis expires individual session keys, but the user Set has no matching TTL. Before a new session is stored, missing session keys are removed from that Set. This is acceptable for the current MVP; a background cleanup job can scale it later.
-
-#### Redis Implementation Naming
-The implementation class is named `RefreshTokenRedisStore` because it is the Redis-specific adapter. The name leaves room for another store implementation later, such as a database-backed store.
-
-### FastAPI Response Handling
-- **`response_model`**: an actual contract checked at runtime, *after* the business logic has already fully executed (including the DB commit!). It must stay in sync with what the service actually returns, or you get a `ResponseValidationError` (500) **even though the operation already succeeded and was saved to the database**.
-- **`status_code`**: set on the route decorator (`@router.post(..., status_code=...)`), not inside the function body. `200 OK` for a synchronous operation that finished immediately, `201 Created` for creating a new resource, `202 Accepted` for an operation that's accepted but will complete later (async) — this will be used for Transfer later.
-- **`HTTPException`**: the only way a plain Python exception (like `ValueError`) gets translated into a clear HTTP response for the client, instead of the default generic `500`.
-
-### Separation of Concerns (Service ↔ Router)
-- **Service layer**: raises plain Python exceptions (`ValueError`) describing a business-logic problem only — it has no concept of HTTP at all.
-- **Router/API layer**: the only place responsible for translating that exception into a status code + response shape (`HTTPException`).
-- This separation lets the same Service be reused from anywhere other than HTTP (CLI, background job, tests) without any dependency on FastAPI.
-- **Code placed right after a `try/except` block** (same indentation as `try`) only runs on the success path — if the `try` body raises and the `except` re-raises (e.g. as `HTTPException`), execution exits the function immediately and never reaches that code. This is what makes `return {"message": "..."}` after a try/except safe to use as the "operation succeeded" response.
-
-### Partial Updates (PATCH) with Pydantic
-- **`request.model_fields_set`**: tells you exactly which fields the client actually sent in the request body, as opposed to which fields simply have a value (a field can have a default/`None` without being "set"). Used in `update_profile` to only touch the fields the client explicitly provided, instead of overwriting everything on every PATCH call.
-- **`db.refresh(user)`**: after `commit()`, the in-memory object can still be showing stale data — `refresh()` re-reads the row from the database so the object (and the response built from it) reflects the actual committed state.
-
----
-
-## 🗂️ Current Project Structure
-
-```
-app/
-├── core/
-│   ├── redis.py          # Shared async Redis client (closed during app shutdown)
-│   ├── config.py         # Settings (pydantic-settings, reads .env)
-│   ├── enums.py           # Currency, WalletStatus, TransactionStatus
-│   └── security.py        # hash_password, verify_password, create/decode_access_token
-├── database.py             # Base, engine, SessionLocal, get_db()
-├── models/
-│   ├── user.py             # User (email, mobile — unique; username is NOT unique)
-│   ├── wallet.py           # Wallet (UniqueConstraint(user_id, currency))
-│   ├── transaction.py      # Transaction (sender/receiver wallet, status, currency)
-│   └── ledger_entry.py     # LedgerEntry (direction, entry_type, amount > 0 check)
-├── repositories/
-│   ├── user_repository.py  # get_by_username/email/mobile/id, create
-│   └── wallet_repository.py # create, get_by_id, get_by_user_and_currency, get_by_user_id, get_by_id_and_user
-├── mappers/
-│   └── user_mapper.py      # User (ORM) → UserResponse (schema)
-├── schemas/
-│   ├── authentication.py   # RegisterRequest, LoginRequest, UserResponse, AuthResponse
-│   ├── wallet.py           # CreateWalletRequest, WalletResponse (ORM attributes)
-│   ├── refresh_session.py  # RefreshSession metadata
-│   ├── refresh_token_request.py # RefreshTokenRequest
-│   ├── updateUserRequest.py     # UpdateUserRequest (partial update)
-│   └── changePasswordRequest.py # ChangePasswordRequest
-├── services/
-│   ├── auth_service.py     # register, login, refresh, rotation, logout
-│   ├── refresh_token_service.py # token generation, hashing, TTL, rotation metadata
-│   ├── wallet_service.py   # create_wallet, get_user_wallets, get_wallet
-│   └── user_service.py     # update_profile, change_password
-├── infrastructure/
-│   └── redis/
-│       └── refresh_token_redis_store.py # Redis storage and atomic scripts
-├── api/
-│   └── routes/
-│       ├── dependencies.py # get_current_user (JWT + token_version validation)
-│       ├── authentication.py # register, login, refresh, logout, logout-all
-│       ├── users.py        # Protected profile and password endpoints
-│       ├── wallet.py       # Protected wallet creation, list, and detail endpoints
-│       └── health.py       # GET /health
-└── main.py                 # FastAPI app, all routers, Redis shutdown lifespan
-
-alembic/versions/
-├── 4e3d3341cd6d_create_initial_schema.py
-├── 55408d5ad25a_allow_duplicate_usernames.py
-└── 27354e4584e1_add_token_version_to_users.py
-
-compose.yaml                # PostgreSQL 16 (host 5433) + Redis 7 (host 6379)
-terminal.md                 # Local command reference and wallet business-rule notes
-```
-
----
-
-## 🔄 Core Flows
-
-### Register
-```
-REGISTER
-   ↓
-User + Wallet
-   ↓
-Commit
-   ↓
-Access JWT + Redis refresh session
-```
-Details: check for duplicates (mobile, email) → hash the password → create the User → `flush()` (to get the generated id) → create a default AED wallet → `commit()` both together → on any failure, `rollback()` everything → the token is generated only **after** a successful commit.
-
-### Login
-```
-LOGIN
-   ↓
-Verify password
-   ↓
-Access JWT + Redis refresh session
-   ↓
+```text
 Client
-```
-Details: normalize the email (`lower()`) → look it up → verify the password (with timing side-channel protection if the user doesn't exist) → issue an access JWT and store a refresh session in Redis → return both tokens with user data.
+  |
+  +-- /app/about, /app/support ----------------> explicit public display fields
+  |
+  +-- protected API -> JWT signature/expiration
+                           |
+                       PostgreSQL user/version check (worker thread)
+                           |
+                       Redis sid -> current refresh record (atomic read)
+                           |
+                       Router -> Service -> Repository -> PostgreSQL
+                                      |
+                                      +-- async Redis: sessions, limits, FX cache
+                                      +-- external reference FX / SMTP as required
 
-### Protected Request
-```
-Protected Request
-   ↓
-Authorization: Bearer JWT
-   ↓
-HTTPBearer
-   ↓
-decode_access_token()
-   ↓
-sub
-   ↓
-UserRepository.get_by_id()
-   ↓
-Current User
-   ↓
-UserMapper
-   ↓
-UserResponse
-   ↓
-JSON
-```
-Details: `HTTPBearer(auto_error=False)` extracts the token from the header (returns `None` if missing — handled manually as 401) → `decode_access_token()` verifies the signature and expiry → extract `sub` (user id) → look up the user in the database → if missing or invalid, a unified 401.
+Money movement:
+validate -> idempotency -> lock relevant records -> ledger + balance -> one commit
+Failure -> rollback
 
-### Update Profile (`PATCH /users/me`)
-```
-UpdateUserRequest
-   ↓
-model_fields_set (only what the client actually sent)
-   ↓
-update provided fields (mobile checked for duplicates)
-   ↓
-Commit + Refresh
-   ↓
-UserResponse
+External payments:
+webhook -> durable PostgreSQL queue -> worker fetch/verify -> post once
+                                   ^
+                                   |
+                           reconciliation producer
 ```
 
-### Change Password (`POST /users/me/change-password`)
-```
-ChangePasswordRequest
-   ↓
-verify current_password
-   ↓
-new_password == confirm_password?
-   ↓
-new_password != current_password?
-   ↓
-hash_password(new_password) + increment token_version
-   ↓
-Commit
-   ↓
-{"message": "Password changed successfully"}
-```
+Synchronous database/password work runs in worker threads. Redis and async HTTP
+remain on the event loop. Services/repositories preserve the existing project
+structure; simple public app metadata needs neither a database nor a service layer.
 
-### Wallet Creation and Reads
+## Important contracts for reviewers
 
-- `POST /wallets`: accepts `CreateWalletRequest` with `currency` (`AED`, `USD`, or `EUR`). The owner comes from `get_current_user`, rather than the request body. The service checks for an existing wallet for that user/currency, creates and commits the wallet, and returns `201` with `id`, `currency`, `balance`, and `status`. Model defaults set balance to zero and status to `ACTIVE`. A detected duplicate returns `409`.
-- `GET /wallets`: returns `200` with the authenticated user's wallets, filtered by `user_id`.
-- `GET /wallets/{wallet_id}`: queries by both wallet id and authenticated user id. Returns `200` for an owned wallet; missing wallets and wallets owned by another user both return `404` with `Wallet not found`, avoiding disclosure of another user's wallet.
-- All three routes require JWT authentication. `WalletResponse` uses Pydantic `from_attributes=True` to serialize ORM objects, including the Decimal balance.
-- Repositories perform database operations; the service owns business checks and commits; the router maps service `ValueError`s to HTTP responses.
+### Identity and sessions
 
-### Refresh Token Rotation
-```
-Refresh Token A
-   ↓ hash
-Redis: refresh_session:H(A)
-   ↓ load session and validate absolute expiry
-Generate Refresh Token B
-   ↓ atomic Lua rotation
-Delete H(A) + add H(B)
-   ↓
-New access token + Refresh Token B
-```
+- Email/mobile identify users; `username` is a non-unique display name.
+- Every successful login creates a new random `sid`; it identifies a login
+  session, not physical hardware. Labels are untrusted display metadata.
+- Rotation preserves `sid`, creation time, device metadata and absolute expiry;
+  it replaces the refresh token and updates last-seen time.
+- Redis keys are `refresh_session:{hash}`, `user_refresh_sessions:{user_id}` and
+  `auth_session:{user_id}:{sid}`. Record/index/pointer updates are atomic.
+- Protected requests check the current account version and active session. A
+  deleted device cannot keep using an otherwise unexpired access JWT.
+- `401 / SESSION_REVOKED` is terminal for the client; expired access JWTs instead
+  use `ACCESS_TOKEN_EXPIRED`. A Redis auth outage returns retryable 503.
+- Current-session deletion returns `400 / CURRENT_SESSION_DELETE_FORBIDDEN`;
+  `/auth/logout` signs out the current session. Logout-all changes the account
+  version and revokes all indexed sessions.
+- Old pre-sid credentials require login after rollout. An already-authorized
+  in-flight request may finish; no push/offline-dialog implementation is included.
 
-The old refresh token is single-use. A second refresh attempt with A returns
-`401 Unauthorized`. Concurrent requests using the same token produce one
-successful rotation and reject the remaining requests.
+### Financial records and external integrations
 
----
+- Wallet currencies are AED, USD and EUR. A user has at most one wallet per currency.
+- Transfer posting changes balances and paired ledger entries in one transaction,
+  with stable lock ordering and idempotent replay/conflict behavior.
+- The Ledger records actual movements; pending external payment requests alone
+  do not credit money. Checkout requires the client/provider integration.
+- TopUp credit requires independently fetched matching paid provider data, with
+  the account's configured supported currency and sandbox credential.
+- Worker retry exhaustion creates a durable support alert, not a user-facing
+  contact ticket. Reconciliation can recover pending payment work.
+- FX is for estimated display, never settlement. Missing/stale/invalid rates fail
+  the whole summary rather than returning a partial total.
+- CSV exports preserve amounts/currencies and do not mutate financial records.
+  They are ledger activity downloads, not certified opening/closing statements.
+- Existing ledger timestamps are naive. CSV preserves their stored time semantics;
+  it does not silently convert historical timestamps into a new timezone.
 
-## 🐛 Lessons Learned (Worth Remembering)
+## Review and release work remaining
 
-- **Name collisions**: importing a name from a library that shadows a name you also use (e.g. `Enum` from sqlalchemy vs. `enum.Enum`, or `Transaction` from sqlalchemy vs. our own model) causes confusing bugs — fix with an explicit alias (`Enum as SQLEnum`) or a fully-qualified `import enum`.
-- **Case-sensitive imports**: file/folder names are case-sensitive in Python imports even though macOS's filesystem isn't — they must match exactly, especially since Linux (production) *is* case-sensitive.
-- **`create_all()` only creates new tables** — it never alters an existing one. Any change to an existing model needs an Alembic migration (or a drop/recreate, but only during early development).
-- **Hidden files and stray spaces in filenames**: a file literally named `" .env"` (with a leading space) is not the same as `.env` — it fails silently because pydantic-settings can't find it.
-- **`--reload` and Swagger UI**: the server auto-reloads, but an already-open Swagger tab in the browser can hold a stale schema — refresh the page after every code change before testing.
-- **Passlib + modern bcrypt**: `passlib` (last released years ago) is incompatible with newer `bcrypt` releases (5.x) — fix by pinning an older compatible version (`bcrypt<4.1`).
+These are review tasks, not features falsely marked as complete:
 
----
+- Complete the final target-environment integration/security review, including
+  authentication abuse controls, password-policy/hash limits, permissions, logs,
+  proxy configuration and failure/recovery behavior.
+- Review concurrent wallet creation: the database uniqueness constraint exists,
+  but the wallet service still relies on a precheck without mapping every possible
+  concurrent uniqueness failure to a friendly conflict response.
+- Review balance protection: services validate funds, but `Wallet.balance` does
+  not currently have a database-level non-negative check constraint.
+- Decide and validate a consistent timezone policy before changing naive stored
+  timestamps or presenting timezone-dependent statements in the mobile client.
+- Configure real public support contacts and delivery credentials for the intended
+  environment. Password-reset background email has no durable retry queue.
+- Verify real sandbox checkout/provider callbacks using the team's own account;
+  mock-based posting tests are not a payment-provider certification.
+- Build the mobile screens, secure token storage, coordinated refresh interceptor,
+  session-ended dialog and CSV save/share flow.
+- For public deployment, configure TLS, private service networking, managed
+  secrets, backups/restore, monitoring and operational ownership. The supplied
+  Compose stack is a local/sandbox setup.
+- Commit/push the agreed review snapshot before teammates clone it. Current
+  local verification does not publish a hosted API, merge a PR or distribute code
+  automatically. Validate on any additional target OS/CPU platform as required.
 
-## ✅ Current Status
+## Milestones
 
-**Done:**
+| Date | Implemented / verified |
+| --- | --- |
+| 2026-09 to 2026-10 | User/wallet models, authentication, profiles, refresh rotation and wallet reads |
+| 2026-10-25 to 2026-10-31 | Internal transfer/ledger flow, idempotency, execution boundaries and API error privacy |
+| 2026-11-07 to 2026-11-08 | Moyasar durable events, worker verification, creation idempotency, leases, retries and reconciliation |
+| 2026-11-08 | Initial shareable Docker setup; historical Linux run: 79 tests |
+| 2026-11-14 to 2026-11-15 | Password reset, recipient lookup, device metadata/sid and current-session protection |
+| 2026-11-15 | Wallet Summary/FX, Statement Export, English inline comments and public About/Support |
+| 2026-11-15 | Refreshed README/progress and fresh Docker handoff validation: 171 tests plus HTTP/PostgreSQL checks |
 
-- Models: User, Wallet, Transaction, LedgerEntry + their relationships.
-- Wallet APIs: authenticated creation, listing, and detail lookup; user ownership filtering; duplicate-currency precheck and database uniqueness constraint.
-- Wallet schemas, service, and repository queries; routes reorganized under `app/api/routes/` and registered in `app/main.py`.
-- Redis client cleanup on application shutdown through FastAPI lifespan.
-- Database: PostgreSQL + Alembic migrations; current local infrastructure uses Docker Compose (PostgreSQL 16 on host port 5433 and Redis 7 on 6379), with a named PostgreSQL volume.
-- Auth: Register, Login, JWT (issue + decode), password hashing, protection against timing attacks and user enumeration.
-- `GET /users/me`, `PATCH /users/me` (partial update), `POST /users/me/change-password` — all JWT-protected via `get_current_user`.
-- Redis refresh-token sessions: storage, 30-day idle TTL, 90-day absolute expiry, rotation, reuse detection, and stale-index cleanup.
-- Per-device logout and logout-all with `token_version` invalidation.
-- Atomic Redis Lua scripts for refresh rotation and logout-all.
-- Real integration verification completed against FastAPI, PostgreSQL, and Redis, including concurrent refresh requests.
+## Documentation map
 
-#### Real Integration Verification
-The flow was tested with a live FastAPI server, PostgreSQL, Redis, and real HTTP requests:
+Start with [README.md](README.md) for cloning, environment generation, startup,
+configuration, API inventory, tests and reviewer instructions.
 
-1. **Register:** confirmed `201`, access token, refresh token, and default wallet creation.
-2. **Login:** confirmed `200`, Redis session key, user Set membership, 30-day TTL, and approximately 90-day absolute expiry.
-3. **Protected access:** confirmed a valid JWT returns `200` and an invalid JWT returns `401`.
-4. **Refresh and rotation:** confirmed `A -> B`, removal of `H(A)`, insertion of `H(B)`, and preservation of session identity and absolute expiry.
-5. **Reuse detection:** confirmed reusing A returns `401`, while B can rotate successfully to C.
-6. **Current-device logout:** confirmed the selected refresh token returns `401` while other device sessions remain usable.
-7. **Multiple devices:** confirmed logging out device A does not revoke device B.
-8. **Logout-all:** confirmed all refresh tokens and old access tokens return `401`, and `token_version` invalidates the old JWTs.
-9. **Concurrent refresh:** three simultaneous requests using the same token produced exactly one `200` and two `401` responses, proving atomic rotation.
+- [Business/design learning guide](BUSINESS_GUIDE.md)
+- [Device sessions and mobile error contract](DEVICE_SESSIONS_GUIDE.md)
+- [Wallet Summary + FX](WALLET_SUMMARY_GUIDE.md)
+- [Statement Export](WALLET_STATEMENT_GUIDE.md)
+- [Moyasar TopUp flow](MOYASAR_TOPUP_FLOW.md)
+- [Worker and durable support alerts](MOYASAR_WORKER_GUIDE.md)
+- [Reconciliation](RECONCILIATION_GUIDE.md)
+- [Earlier TopUp test evidence](TOPUP_TEST_RESULTS.md)
+- [Earlier transfer test evidence](TRANSFER_TEST_RESULTS.md)
 
-#### Wallet Rules and Remaining Work
-
-The wallet notes in `terminal.md` specify user ownership, currency as a wallet attribute, one wallet per currency per user, non-negative balances, and balance changes only through transaction/ledger operations.
-
-- Ownership and currency uniqueness are implemented. The API currently exposes creation and reads, including the stored balance; there is no direct balance-update endpoint.
-- The non-negative balance rule remains a design requirement: the current wallet model and initial migration do not define a `balance >= 0` database check.
-- Duplicate creation is checked before insertion, and the database enforces uniqueness. Concurrent duplicate requests still need explicit `IntegrityError` handling and rollback to consistently return `409`.
-- Initial `TransferService.transfer()` now validates the eight internal-transfer rules, locks both wallets through the repository, creates the transaction and paired ledger entries, updates balances, and commits once with rollback on posting failure. The transfer API is registered and sequential HTTP integration checks passed; PostgreSQL concurrency verification, idempotency, and precision policy remain pending. Top-up/withdraw execution and gateway integration are not implemented.
-
-**Verification scope:** the original authentication integration results above are preserved from the earlier progress log. Subsequent real API transfer verification, including wallet creation and balance reads, is recorded in [TRANSFER_TEST_RESULTS.md](TRANSFER_TEST_RESULTS.md). On October 28, seven automated execution-boundary tests were added in `tests/test_execution_boundaries.py`; 25 live authentication/endpoint checks and 13 wallet/history regression checks also passed. Broader automated business-rule and PostgreSQL concurrency coverage remains pending.
-
-**Next:**
-
-1. Add automated pytest coverage for authentication and wallet creation/list/detail, including unauthorized access, cross-user ownership, duplicate currencies, and concurrent creation.
-2. Handle wallet uniqueness errors with rollback and a consistent conflict response; enforce the non-negative balance requirement.
-3. Implement the transaction/ledger workflow and balance changes, including transfer, top-up, withdrawal, and concurrency rules.
-
-#### Recent Milestones
-
-- **2026-10-28 authentication learning flow:** preserved the original `register_user`, `login_user`, `_build_auth_response`, `refresh_access_token`, `logout`, and `logout_all` method names and business sequence. Named new worker helpers with `_sync` suffixes and added comment flowcharts beside the original methods. Thread-pool behavior remains in place; all seven automated tests still pass.
-- **2026-10-28 sync/async review:** switched six SQLAlchemy-only endpoints (three wallet, two transaction, one transfer) to `def`. Kept async Redis/authentication/lifespan behavior and the nonblocking basic health response. Offloaded authentication SQLAlchemy calls, bcrypt work, ORM response serialization, and logout-all's database commit using awaited `run_in_threadpool` helpers. Seven automated tests and 38 live scenario checks passed. Created zero-balance test user 5; existing AED balances remain 350/250. Added an execution diagram and explanation to the business guide. No schema migration needed.
-- **2026-10-28 transaction history verification:** registered the existing transaction router and passed 12 live HTTP checks for sender/receiver history and details, unrelated-user isolation, missing records, absent/invalid tokens, and non-integer ids. History matched database ownership; existing balances and financial records stayed unchanged (wallet 1: AED 350; wallet 3: AED 250). Created unrelated test user 4 with a zero-balance wallet. See [results](TRANSFER_TEST_RESULTS.md). Multi-item ordering and repeatable automated coverage remain pending.
-- **2026-10-25 live transfer API verification:** registered the existing transfer router in `main.py`, created a second test user, and seeded development AED balances of 500/100. A real HTTP transfer of 150 returned `201/SUCCESS`, leaving wallet 1 at AED 350 and wallet 3 at AED 250, with one Transaction and two ledger entries. Zero amount, same wallet, different currencies, insufficient funds, inactive sender, inactive receiver, and another user's sender were all rejected with unchanged balances/history. Both wallets restored to ACTIVE. See [full results and fixture caveat](TRANSFER_TEST_RESULTS.md).
-
-- **2026-09-05:** authentication progress documented, including Redis rotation, logout-all, stale-index cleanup, and recorded real HTTP verification.
-- **2026-09-06 — `a4615e4`:** wallet repository lookups by id and user/currency; wallet business-rule notes.
-- **2026-09-06 — `e4885d8`:** wallet creation/list/detail APIs, schemas and service; ownership queries; routes moved into `app/api/routes/`.
-- **2026-10-25 review:** incorporated those wallet changes and the current local Docker command notes. `terminal.md` contains uncommitted command-reference edits at review time.
-- **2026-10-25 documentation:** added `BUSINESS_GUIDE.md`, an English learning reference covering entities and relationships, account/session/wallet flows, ledger examples, architecture rationale, and implemented versus planned rules; linked it from the README.
-- **2026-10-25 transfer design notes:** expanded the guide with an AED 100 transfer, its debit/credit entries, the shared database transaction and rollback requirement, and model review followed by a planned `TransferService` as the next transfer implementation step.
-- **2026-10-25 agreed transfer requirements:** documented the first eight internal-transfer rules in the guide, with a validation flowchart: positive amount, sender ownership, different wallets, matching currencies, both wallets ACTIVE, sufficient sender balance, and exactly one Transaction plus one debit and one credit per successful transfer. Implementation remains pending.
-- **2026-10-25 agreed transfer flow:** added a diagram for the planned `POST /transfers` → current user → `TransferService` → validation → uncommitted PENDING transaction → debit/credit entries → balance updates → SUCCESS → one final commit. Clarified flush versus commit, rollback, and the separate future external-gateway workflow.
-- **2026-10-25 transfer service correction and learning notes:** corrected the new service to use `LedgerDirection.DEBIT/CREDIT` with `LedgerEntryType.TRANSFER`, supplied required reference/currency fields, and mapped `message` to the existing `gateway_message` field. Fixed ledger-model indentation and added a numbered service flowchart. One-off SQLite checks passed for success, the eight rules, and rollback after a flushed posting failure; PostgreSQL locking/concurrency and HTTP integration were not tested.
-- **2026-10-25 transaction reference format:** new transfers use `TXN-` plus the full UUID hex value (36 characters). The existing unique `String(50)` column supports it, so no schema migration is needed and existing references stay unchanged.
-- **2026-10-25 PR review automation prepared:** added `.github/workflows/codex-review.yml`, a FastAPI/wallet-focused review prompt, and setup documentation. Review runs read-only; a separate job creates/updates a PR summary comment. Forks, drafts, and Dependabot are skipped. Local YAML/configuration and mocked publisher checks passed. Not activated or live-tested: files must be pushed and the `OPENAI_API_KEY` repository secret configured; the local GitHub CLI is not authenticated.
-- **2026-10-25 visual learning reference:** added Mermaid diagrams throughout `BUSINESS_GUIDE.md` for ownership and table relationships, registration, authorization, profile/password updates, session expiry and rotation, logout, wallet creation, the AED 100 transfer, atomic commit/rollback, planned gateway outcomes, and application layers.
-
-#### Local Development Reference
-
-```bash
-docker compose up -d       # Start PostgreSQL and Redis
-alembic upgrade head       # Apply database migrations
-uvicorn app.main:app --reload
-docker compose ps          # Inspect service status
-docker compose logs -f     # Follow service logs
-docker compose down        # Stop/remove containers; retain PostgreSQL volume
-```
-
-`terminal.md` also records general Docker commands for inspecting containers, images, logs, and volumes, and stopping/starting/removing containers or pruning unused resources. Redis currently has no persistent volume configured in Compose.
-
----
-
-_Last updated: 2026-10-28 — reviewed sync/async execution, added worker-boundary tests, and verified authentication and history behavior against local PostgreSQL and Redis._
-
-### 2026-10-31 — API error privacy review
-
-- Added `BusinessError`: only deliberately safe business messages are returned by routes. Unexpected `ValueError`, database failures, and missing internal records return a generic JSON 500; tracebacks remain server-side. Debug responses are disabled.
-- Access-token errors no longer distinguish a missing user from malformed credentials. Refresh failures use `Invalid refresh token`.
-- Registration duplicates share one message; profile updates no longer explicitly confirm mobile registration. **This reduces message disclosure, but success/failure responses can still allow account enumeration.** Fully addressing that requires a registration/contact-verification flow change and abuse controls.
-- Missing, unauthorized, inactive receiver, and mismatched-currency transfer failures share `Wallet unavailable for this transfer`. Own-wallet balance and amount errors remain useful.
-- Validation responses retain field paths and reasons but omit submitted input and context, avoiding password/token reflection.
-- Preserved the transfer flowcharts and three-method structure. No database migration is needed for this error-handling change.
-- Validation: 22 automated tests passed, including ASGI HTTP error responses and isolated SQLite posting/rollback tests. Pyright reported zero errors for routes, services, main, and error handlers. No live user balances were changed; PostgreSQL locking/concurrency was not retested here.
-- The screenshot's APIRouter diagnostic was not reproducible with the current CLI checker. Workspace settings select `.venv` by default and exclude both environments from workspace analysis. An already-selected VS Code interpreter may need selecting `.venv/bin/python` explicitly, then `Python: Restart Language Server`.
-
-### 2026-10-31 — Live idempotency tests passed
-
-- Added opt-in `scripts/test_live_idempotency.py` for local HTTP + PostgreSQL tests.
-- Login, first transfer, identical retry and changed-amount conflict returned
-  201 / 201 / 409. Transaction 2 was posted once.
-- Three genuinely overlapping requests returned 201 with transaction 3 each.
-  Observed three PostgreSQL lock waiters before releasing the fixture row lock.
-- Each key produced one COMPLETED idempotency record, one SUCCESS transaction and
-  two ledger entries. Test wallets 7/8 ended at 300/300 AED from 500/100 fixtures.
-- Existing wallet balances were unchanged. See `TRANSFER_TEST_RESULTS.md` for the
-  full report and reproducible command. Load, connection-limit and failure testing
-  remain separate work; Moyasar top-up/webhook integration has not started.
-
-### 2026-11-07 — Agreed Moyasar TopUp business reference
-
-- Added [Moyasar TopUp Flow](MOYASAR_TOPUP_FLOW.md) as the English reference for all six steps, with a sequence diagram, posting flow, status meanings, API field mapping, and the current implementation checklist.
-- Backend COMPLETED is the source of truth for wallet credit; SDK paid only indicates payment progress. The target design saves webhook events before acknowledgement, verifies payments through a worker, and posts once in one database transaction.
-- Durable webhook storage, worker verification/retries, atomic TopUp credit, and REVIEW_REQUIRED remain planned. The current Transaction sender/receiver requirements need an external-funding accounting decision before posting is implemented.
-- Future implementation steps must have short business explanations and flowcharts above their functions, with comments matching implemented behavior.
-- Documentation-only update; no application behavior or database schema changed in this step.
-
-### 2026-11-07 — Durable Moyasar webhook receipt
-
-- Replaced the logging-only webhook with a synchronous database-backed handler and kept the business flowchart above the function.
-- Verifies SecretStr safely, rejects live events, ignores unsupported event types, validates Payment IDs, and saves payment_paid events with Event ID deduplication.
-- Returns success only after commit for accepted events; database failures roll back. No wallet credit happens in this route.
-- Registered the event model and applied migration ee20e59308b2 locally.
-- Validation: 31 automated tests passed; PostgreSQL duplicate-receipt check passed with its test event rolled back. Worker processing remains planned.
-
-### 2026-11-07 — English worker reference and TopUp processing fixes
-
-- Standardized Moyasar/TopUp code comments and flowcharts in English. Added purpose/source/use hints for every related ORM model, Pydantic schema, and TopUpStatus.
-- Added [Worker and TopUp Models](MOYASAR_WORKER_GUIDE.md): polling, query breakdown, backoff arithmetic, delivery versus processing retries, atomic commits, and crash recovery.
-- Recheck ACTIVE wallet status under lock; inactive/suspended wallets go to review without credit.
-- Normalize invalid payment JSON/schema responses into a safe retryable error; validate payment field types strictly so malformed responses do not block the oldest-event queue.
-- Payment ID mismatches review the expected TopUp, without modifying another TopUp or reopening a completed credit.
-- Fail worker startup for missing/placeholder/non-test API keys. A real test key still needs configuring locally.
-- Validation: 48 automated tests passed, targeted Pyright check passed, and two-worker PostgreSQL contention test passed in an isolated schema with mocked payment responses. Added an opt-in concurrency script; no live user balances changed.
-- Deferred: claim/lease design to avoid holding event locks across HTTP, retry limits/alerts, and real provider integration testing.
-# 2026-11-07 — TopUp creation idempotency
-
-- `POST /topups` now requires `Idempotency-Key`. Same user/key/wallet/amount returns
-  the existing TopUp and Payment ID with 201; changed data returns 409.
-- Added nullable `topups.idempotency_key` for legacy compatibility and a unique
-  `(user_id, idempotency_key)` constraint. Reviewed/applied migration `a903bc521d40`.
-- PostgreSQL conflict handling coordinates simultaneous inserts. The request and
-  key commit together; failures roll back both. No hash is needed for two stored
-  input fields. A replay returns the current funding status.
-- 60 unit tests passed. Isolated PostgreSQL tests passed for three concurrent
-  identical creations, changed-data conflicts, and duplicate-payment posting.
-- English flowchart and Postman instructions are in `MOYASAR_TOPUP_FLOW.md`.
-
-### 2026-11-08 — Payment leases, bounded retries and support alerts
-
-- Replaced the long DB transaction around HTTP with claim/commit, fetch without a
-  DB session, then fenced finalization/commit. Claim counters reject stale owners.
-- Added 60-second leases and up to eight provider attempts per event; 404 is retried,
-  not treated as failed. Exhaustion flags REVIEW_REQUIRED and persists an alert.
-- Matching failed payments become FAILED without credit or automatic retries.
-  Added payment_failed webhook intake, still verified through the provider API.
-- Migration b71e58d42a90 applied: nullable event.support_alert_at. Safe reasons live
-  in last_error; support logs happen after commit. Added a local read-only alert viewer.
-- 69 automated tests plus isolated PostgreSQL concurrency/lease tests passed.
-- Existing running workers must be restarted to load this version. No real payment
-  was created and no existing wallet balance was changed by these tests.
-
-### 2026-11-08 — Keep late payments eligible
-
-- 404 and initiated/authorized now keep PENDING: recheck after 2 minutes while the
-  TopUp is younger than 15 minutes, then after 60 minutes. No automatic waiting expiry.
-- Removed pre-fetch attempt cutoff so a late paid response can complete normally.
-  Technical errors still escalate at claim count 8 (total claims, not consecutive errors).
-- No new classes, tables or migrations. Existing review cases are not automatically reopened.
-- 72 tests passed, including late webhook, missing late webhook and duplicate-credit protection.
-
-### 2026-11-08 — Reconciliation scenario checks
-
-- Added producer-to-consumer tests starting with an old TopUp and no webhook.
-- 404: stays PENDING, same event rechecked later; slow checks by age/claim threshold.
-- Timeout/5xx: exponential backoff capped at 60 minutes. Claim 8 records a support
-  alert once while keeping PENDING and continuing hourly checks, not REVIEW_REQUIRED.
-- Paid: verify and credit once, including a later duplicate webhook.
-- 75 tests passed using isolated SQLite data and mocked provider responses. No
-  new migration or existing-data changes. Restart the consumer to load this policy.
-
-### 2026-11-08 — Shareable Docker setup
-
-- Added a locked multi-stage Dockerfile, non-root runtime, separate test image,
-  Docker build exclusions, and generated `.env.docker` settings without sharing secrets.
-- Compose now runs PostgreSQL/Redis health checks, migrations, and the API;
-  the optional payments profile adds both workers. Host ports bind to loopback.
-- Normalized Git's app/Models directory to app/models for Linux imports.
-- README covers Docker-only startup, sandbox setup, logs, tests, data persistence,
-  port conflicts, updates and local development. Real payments still need personal sandbox keys.
-- Isolated Docker validation: fresh migrations passed; health/docs, register/login,
-  wallet lookup and token refresh passed; 79 tests passed in Linux. Worker startup
-  was checked with an empty queue, not with a real provider payment.
-
-### 2026-11-08 — Clean Git snapshot portability check
-
-- Tested committed files exported to a fresh directory, without host .env or .venv.
-- Found identical app/Models and app/models paths in commit 3c62711; removed only
-  uppercase duplicates from the Git index, keeping lowercase files intact.
-- Retested the corrected index snapshot with new secrets and isolated Docker volumes:
-  migrations, health/docs, registration, login, zero-balance wallet, Redis refresh,
-  and all 79 tests passed. Two dependency deprecation warnings remain.
-- Added README instructions for a fresh-clone check and Dockerfile/Compose roles.
-  The path correction still needs a commit/push. Windows/x86 hosts were not tested.
+Learning notes may describe decisions at the time they were written. For the
+current implementation status, use this file, the API schema and the source.

@@ -1,18 +1,52 @@
 # Nexa Wallet API
 
-A learning project for a wallet backend built with FastAPI, SQLAlchemy, PostgreSQL
-and Redis. It includes authentication, wallet transfers, transaction/ledger history,
-and Moyasar sandbox top-ups with idempotency, background processing and reconciliation.
+A digital wallet backend built with FastAPI, PostgreSQL and Redis. It supports
+multi-currency wallets, atomic internal transfers, ledger history, Moyasar sandbox
+top-ups, session management, reference FX summaries and downloadable CSV statements.
 
-## Run with Docker (no local Python required)
+**Handoff status:** backend MVP features are implemented for local demos and code
+review. The mobile application and final production integration/security review
+remain separate work. See [PROGRESS.md](PROGRESS.md) for current evidence and limits.
 
-Install and start **Docker Desktop** (or Docker Engine with the Compose plugin).
-Clone/download this repository, then open a terminal in the folder containing
-`compose.yaml`. Run the following commands from that folder.
+## What is implemented
 
-### 1. Generate your local settings
+| Area | Behavior |
+| --- | --- |
+| Authentication | Registration, login, password hashing, signed access JWTs and rotating refresh tokens |
+| Password recovery | Generic responses, Redis email/IP limits, single-use 15-minute reset tokens and SMTP delivery |
+| Sessions | Device metadata, `sid` in access JWTs, live Redis checks, current-session identification and remote revocation |
+| Wallets | AED/USD/EUR, one wallet per user/currency, ownership-scoped reads and recipient lookup |
+| Transfers | Same-currency internal transfers, PostgreSQL row locks, idempotency and atomic ledger/balance posting |
+| Sandbox top-ups | Idempotent requests, durable Moyasar webhook receipt, worker verification, retry leases and reconciliation |
+| History | Owned transaction history and paginated ledger entries |
+| Wallet summary | Decimal conversions, reference rate dates, six-hour FX cache and no partial totals |
+| Statement export | Owned CSV downloads, bounded dates/row count, escaped text and no money mutations |
+| App information | Public About and configured Support contact details, without database/authentication dependencies |
 
-macOS / Linux:
+All code comments and inline flow diagrams are in English. Detailed feature guides
+are linked below; some learning guides also include Arabic explanations.
+
+## Start with Docker
+
+Install and start Docker Desktop, or Docker Engine with the Compose plugin.
+No local Python, PostgreSQL or Redis installation is needed for this path.
+
+### 1. Get the review snapshot
+
+The current working branch is `adding-new-support-apis`. The owner must commit and
+push the intended snapshot before teammates clone it; local edits are not present
+on GitHub automatically. Reviewers can then run:
+
+```bash
+git clone --branch adding-new-support-apis https://github.com/Mahmoud-Abdelwahab/nexa-wallet.git
+cd nexa-wallet
+```
+
+Use the agreed branch/tag if the review snapshot changes later.
+
+### 2. Generate local settings
+
+macOS/Linux:
 
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" -v "${PWD}:/workspace" -w /workspace python:3.14-slim python scripts/setup_docker_env.py
@@ -24,303 +58,244 @@ Windows PowerShell:
 docker run --rm -v "${PWD}:/workspace" -w /workspace python:3.14-slim python scripts/setup_docker_env.py
 ```
 
-This creates `.env.docker` with random JWT and webhook secrets. Running it again
-leaves the existing file unchanged. It does not change your local Python `.env`.
-The Unix command creates the file as your own user, so you can edit it afterward.
+This creates `.env.docker` with random JWT/webhook secrets. It leaves existing files
+unchanged. Share `.env.docker.example`, not `.env`, `.env.docker`, real tokens or
+provider credentials. The build excludes host virtual environments and environment
+files.
 
-Share the repository and `.env.docker.example`, **not** `.env` or `.env.docker`.
-The real environment files and host virtual environments are excluded from the image.
-
-### 2. Build and start
+### 3. Build and run
 
 ```bash
 docker compose --env-file .env.docker up -d --build
+docker compose --env-file .env.docker ps -a
 ```
 
-The first build downloads images and dependencies. Compose starts PostgreSQL and
-Redis, waits for PostgreSQL readiness, runs `alembic upgrade head`, then starts the
-API after migrations finish successfully. You do not need to run migrations manually
-on first startup. `migrate` showing **Exited (0)** is normal: it is a one-time job.
+Compose starts PostgreSQL, Redis and Mailpit, applies Alembic migrations, then
+starts the API. `migrate` exiting with code 0 is expected. It does not seed users,
+fund wallets, or start payment workers unless the payments profile is requested.
 
-### 3. Open the API
-
-- Swagger / interactive requests: <http://localhost:8000/docs>
+- Swagger: <http://localhost:8000/docs>
 - ReDoc: <http://localhost:8000/redoc>
 - Health: <http://localhost:8000/health>
+- Public About: <http://localhost:8000/app/about>
+- Public Support: <http://localhost:8000/app/support>
+- Local email inbox: <http://localhost:8025>
 
-```bash
-docker compose --env-file .env.docker ps -a
-docker compose --env-file .env.docker logs -f api
-```
+### 4. Follow a first-use flow
 
-Register a new account using `POST /auth/register`, then log in. The default AED
-wallet starts at zero; a new installation has no sample users or funded wallets.
-Use the schemas shown in Swagger for the current request fields. Transfers and
-TopUp creation require an `Idempotency-Key` header: reuse it for retries of the same
-request, and choose a new key for a new operation.
+1. Open Swagger. Register an account using `/auth/register`; the date of birth must
+   use `YYYY-MM-DD`. Registration creates a zero-balance AED wallet.
+2. Authorize with the returned access token. Call `/users/me` and `/wallets`.
+3. Create USD/EUR wallets if needed. `/wallets/summary?base_currency=AED` shows an
+   estimated total; `/wallets/{id}/statement` downloads the ledger CSV.
+4. Log in again using another device label. Check `/auth/sessions`, delete the
+   other session, and confirm its existing token gets `401/SESSION_REVOKED`.
+5. Request `/auth/forgot-password`, read the message in Mailpit, and reset the
+   password. Sign in again afterward.
 
-The basic API works without a Moyasar key. Real sandbox payment verification needs
-your own provider key and the optional payment workers below.
+For transfers, the sender needs a funded wallet and the request needs an
+`Idempotency-Key` header. Real sandbox funding requires your own Moyasar sandbox
+credentials and the workers below. There is no direct balance-edit API. Isolated
+automated tests create their own financial fixtures without real payments.
 
-## Wallet statement download
+## Configuration
 
-`GET /wallets/{wallet_id}/statement?format=csv&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
-downloads the authenticated owner's ledger activity as an Excel-friendly UTF-8 CSV.
-It defaults to the last 30 calendar days, allows at most 366 days and 5,000 entries,
-and returns 413 instead of truncating an oversized export. Missing and unowned
-wallets return the same 404. The download preserves balances and ledger data.
+Settings live in `app/core/config.py`. Local Python reads `.env`; Compose reads
+`.env.docker` and passes container-specific database/Redis hostnames.
 
-See the [Statement Export guide](WALLET_STATEMENT_GUIDE.md) for columns, date
-semantics, security handling and Swagger testing. This is a ledger activity export,
-not a certified bank statement with reconciled opening/closing balances.
+| Setting | Purpose/default |
+| --- | --- |
+| `SECRET_KEY` | Required JWT signing secret; generated by the Docker setup helper |
+| `DATABASE_URL` | PostgreSQL connection URL; host and container hostnames differ |
+| `REDIS_URL` | Async Redis URL for sessions, limits and public FX cache |
+| `MOYASAR_SECRET_KEY` | Required setting; the template placeholder starts the basic API, not payment verification |
+| `MOYASAR_WEBHOOK_SECRET` | Webhook authentication secret; separate from the provider API key |
+| `MOYASAR_TOPUP_ALLOWED_CURRENCIES` | Compose defaults to AED; must match provider/account support |
+| `RECIPIENT_LOOKUP_DAILY_LIMIT` | 50 requests per user/24 hours, alongside 5 per minute |
+| `APP_NAME`, `APP_DESCRIPTION` | Public About display text |
+| `SUPPORT_EMAIL`, `SUPPORT_URL` | Optional public contacts; the template uses clearly labelled demo values |
+| `SMTP_HOST`, `SMTP_PORT` | Compose: `mailpit:1025`; host API: `127.0.0.1:1025` |
+| `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS` | Sender and SMTP authentication/TLS options |
+| `API_PORT`, `POSTGRES_PORT`, `REDIS_PORT` | Published host ports: 8000, 5433, 6379 |
+| `MAILPIT_SMTP_PORT`, `MAILPIT_UI_PORT` | Published local mail ports: 1025, 8025 |
 
-## Wallet summary
-
-`GET /wallets/summary?base_currency=AED` returns the authenticated user's estimated
-portfolio value in AED, USD or EUR, with each wallet's original balance, converted
-amount, rate and publication date. It uses Decimal and caches public Frankfurter
-v2 reference rates in Redis for six hours. Missing/invalid rates return 503 rather
-than a partial total. This does not change balances, transfers or ledger entries.
-
-See the [Wallet Summary guide](WALLET_SUMMARY_GUIDE.md) for the response, calculation
-direction, failure handling and tests. The endpoint requires an active `sid` like
-the other protected wallet routes.
-
-## Device sessions
-
-Login and registration accept optional `device_name` and `platform` metadata.
-Use `GET /auth/sessions` and `DELETE /auth/sessions/{session_id}` to manage devices.
-The list includes `is_current`; hide its delete button on mobile. The server
-rejects deletion of the current session with 400/`CURRENT_SESSION_DELETE_FORBIDDEN`;
-use `/auth/logout` to sign out that device.
-Access JWTs carry `sid`; every protected request checks its live Redis session, so
-deleting a device revokes its existing access and refresh tokens. Other devices
-remain active. A revoked session returns 401 with `detail.code=SESSION_REVOKED` for
-the mobile logout interceptor; temporary authentication outages return 503.
-
-**Deployment:** existing tokens without `sid`/an active session pointer require a
-fresh login once. See the [device sessions guide](DEVICE_SESSIONS_GUIDE.md) for the
-request fields, mobile error handling, Redis flow, limits and verification steps.
-
-## Recipient verification
-
-Call `POST /wallets/recipient/resolve` with a Bearer access token and:
-
-```json
-{"sender_wallet_id": 1, "recipient_wallet_id": 25}
-```
-
-The sender wallet must belong to the authenticated user. The recipient must be a
-different wallet, ACTIVE, and use the same currency. A valid lookup returns only:
-
-```json
-{"wallet_id": 25, "display_name": "Ahmed M.", "currency": "AED"}
-```
-
-Names are masked from the existing `User.username` field. A single-word name
-returns its first character followed by `***`. Missing, inactive and
-different-currency recipients all return the same 404. Looking up the sender's
-own wallet ID returns 400; using another user's sender wallet returns 404.
-
-Redis limits each authenticated user to **5 requests per minute and 50 per 24
-hours**. Each counter's window starts at its first request; later requests do not
-extend it. All attempts reaching the limiter count, including rejected lookups.
-Exceeding either limit returns 429; unavailable Redis returns 503. The daily limit
-is configured by `RECIPIENT_LOOKUP_DAILY_LIMIT` (default 50).
-Rejected searches are logged with the requesting user's ID and a reason/status,
-without recipient names or full request bodies.
-
-This endpoint is for display and confirmation. Transfer authorization, currency
-and status checks, and database locks remain in the transfer flow.
-
-```bash
-DEBUG=false .venv/bin/python -m pytest tests/test_recipient.py -q
-# Optional Lua/concurrency checks against a dedicated test Redis:
-DEBUG=false RECIPIENT_TEST_REDIS_URL=redis://127.0.0.1:16386/0 .venv/bin/python -m pytest tests/test_recipient_rate_limit.py -q
-```
-
-## Password recovery and local email
-
-The Docker stack includes Mailpit. Open <http://localhost:8025> to read captured
-emails; they are not delivered to real inboxes. Existing `.env.docker` files work
-with the new defaults. To change the inbox port, set `MAILPIT_UI_PORT`.
-
-For an API running on your Mac, start Mailpit with either command:
-
-```bash
-# Docker (the API itself can still run with local Python):
-docker run -d --rm --name nexa-mailpit -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 axllent/mailpit:v1.27
-
-# Or Homebrew: install once, then run mailpit in a separate terminal.
-brew install mailpit
-mailpit
-```
-
-Run only one Mailpit instance on these ports. Add these settings to your local
-`.env` (Compose uses `SMTP_HOST=mailpit` instead):
+Optional public contacts can be configured in `.env.docker` or `.env`:
 
 ```ini
-SMTP_HOST=127.0.0.1
-SMTP_PORT=1025
-SMTP_USERNAME=
-SMTP_PASSWORD=
-SMTP_FROM=nexa@local.test
-SMTP_STARTTLS=false
+SUPPORT_EMAIL=support@example.com
+SUPPORT_URL=https://example.com/support
 ```
 
-Restart the API after changing settings. Test through <http://localhost:8000/docs>:
+These are **dummy UI-test contacts**, not a real Nexa support inbox or service.
+They are included in the environment template and can be replaced with actual
+public contacts or both cleared to disable support. `/app/support` returns
+`available: false`, null contact fields and an unavailable message when both are
+empty. A configured demo value makes it available for display testing only.
+It returns contact information only; it does not create
+support tickets or send email. `/app/about` returns the app name, API version,
+description and supported wallet currencies. The API version is not the installed
+mobile app's build/version. Both endpoints work without a signed-in session.
 
-1. Register a test user, then call `POST /auth/forgot-password` with
-   `{"email":"alex@example.com"}`. Existing, unknown and rate-limited emails all
-   receive `{"message":"If the email exists, reset instructions will be sent."}`.
-2. Read the token in Mailpit, then call `POST /auth/reset-password` with
-   `{"token":"TOKEN_FROM_EMAIL","new_password":"NewStrongPassword123!"}`.
-3. Log in with the new password. The previous password, access tokens, refresh
-   tokens, reused reset token and other reset tokens issued before this reset
-   must all fail. The password policy is shared with registration: 8–100 characters.
+After environment changes, use `docker compose --env-file .env.docker up -d` to
+recreate affected containers; `restart` alone does not reload environment variables.
+Rebuild after code changes with `up -d --build`.
 
-Reset tokens expire after 15 minutes. Redis stores their SHA-256 hashes and uses
-atomic `GETDEL` to prevent reuse. Forgot-password requests allow three attempts per
-normalized email and ten per client IP per 15 minutes; excess requests silently
-return the generic response. IP limits use the direct client address, not untrusted
-forwarding headers. Behind a proxy, configure trusted proxy handling in the server
-so the direct address represents the client.
+## Authentication contract for mobile integration
 
-SMTP runs in a background task and blocking mail delivery runs in a worker thread.
-Failed delivery removes the reset token when Redis is available and logs a warning
-without tokens or recipient details. In-process background delivery has no durable
-retry queue: request another email if delivery is interrupted.
+Access JWTs contain `sub`, `token_version`, `sid` and `exp`. Protected routes verify
+the account version in PostgreSQL and the live session in Redis on every request.
 
-Password and `token_version` change in one database transaction. Refresh sessions
-now carry that version as well, so a failed Redis session cleanup cannot revive old
-credentials. Legacy refresh sessions default to version zero and are rejected once
-the user's version has changed. A database/Redis failure before completion returns
-503; a consumed token is never restored, so request a new email before retrying.
+| Response | Client action |
+| --- | --- |
+| 401, `detail.code=ACCESS_TOKEN_EXPIRED` | Perform one coordinated refresh, save the token pair and retry once |
+| 401, `detail.code=SESSION_REVOKED` | Clear credentials, show the session-ended message once and return to login |
+| 503, `detail.code=AUTH_SERVICE_UNAVAILABLE` | Keep credentials and allow a later retry |
+| 400, `detail.code=CURRENT_SESSION_DELETE_FORBIDDEN` | Keep the session; current-device sign-out uses `/auth/logout` |
 
-To use the Gmail configuration from the recovery setup, change SMTP settings only
-(keep the account's App Password in your ignored environment file):
+`is_current` identifies the requesting session in the device list. The server
+blocks deleting it through the session-management endpoint. Session IDs identify
+login sessions, not permanent physical hardware; reinstalling an app may leave an
+older session until it is revoked or expires. Session revocation is discovered on
+the next protected request; it does not push a dialog to an offline app or cancel
+requests that already passed authorization. Old tokens without `sid` require a
+fresh login after deploying the session upgrade.
 
-```ini
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your-nexa-email@gmail.com
-SMTP_PASSWORD=YOUR_GOOGLE_APP_PASSWORD
-SMTP_FROM=your-nexa-email@gmail.com
-SMTP_STARTTLS=true
-```
+## Email and password recovery
 
-Run the automated recovery tests without live services:
+Mailpit captures development email locally; it does not deliver mail externally.
+The reset flow uses a 15-minute single-use token, SHA-256 keys in Redis and atomic
+`GETDEL`. Requests are limited to three per normalized email and ten per client IP
+per 15 minutes. Existing, unknown and limited requests share the generic response.
 
-```bash
-DEBUG=false .venv/bin/python -m pytest tests/test_password_reset.py -q
-```
+SMTP runs in an in-process background task with blocking delivery in a worker
+thread. There is no durable mail retry queue; request another email if delivery was
+interrupted. Password and token version commit together; refresh-version checks
+keep old credentials invalid even if Redis cleanup later fails.
 
-## Enable Moyasar sandbox payments
+For a host Python API, use `SMTP_HOST=127.0.0.1`. You can start the Compose Mailpit
+service alone or use an existing local Mailpit instance; do not start two instances
+on the same ports. The Gmail settings from the recovery setup use
+`smtp.gmail.com:587`, `SMTP_STARTTLS=true`, and a separately configured account App
+Password kept in the ignored environment file.
 
-Edit `.env.docker` locally:
+## Enable Moyasar sandbox top-ups
+
+Edit `.env.docker` with your real **sandbox** provider key, retaining the generated
+webhook secret:
 
 ```ini
 MOYASAR_SECRET_KEY=sk_test_YOUR_REAL_KEY
 ```
 
-Keep the generated `MOYASAR_WEBHOOK_SECRET` and use that same value in Moyasar's
-webhook settings. These are different secrets. The payment worker rejects the
-placeholder key and live keys; a valid sandbox key must come from your account.
-
-Start the full stack, including both workers:
+Start the payment workers:
 
 ```bash
 docker compose --env-file .env.docker --profile payments up -d --build
 ```
 
 ```text
-Moyasar webhook endpoint ----+
-                            v
-Reconciliation producer -> PostgreSQL event queue -> Moyasar consumer
-(every cycle + 60s sleep)                            claim -> fetch -> finalize
-                                                            |
-                                                            v
-                                               verify + credit wallet once
+Moyasar webhook -> PostgreSQL event queue -> Moyasar worker
+                          ^                    |
+                          |             fetch provider payment
+                  reconciliation               |
+                          |             verify and post once
+                    pending TopUps             |
+                                               v
+                                      ledger + wallet balance
 ```
 
-- `moyasar-worker`: checks payments, schedules retries and posts verified credits.
-- `reconciliation-worker`: queues recovery work for PENDING TopUps at least five
-  minutes old with no unfinished event. It does not itself credit money.
-- PostgreSQL and Redis data live in named volumes and survive a normal shutdown.
+The webhook must reach public HTTPS `POST /webhooks/moyasar`. It only records
+work; a verified provider payment is required before crediting. Reconciliation
+queues recovery work for old pending requests; support alerts remain durable in
+the database after bounded failures. Worker startup with placeholder keys is not
+a real payment test. Checkout is performed by the client/provider integration,
+not automatically by backend startup.
 
-Moyasar cannot reach your computer's `localhost`. For webhooks, configure a public
-HTTPS endpoint pointing to **`POST /webhooks/moyasar`**. Subscribe to `payment_paid`
-and `payment_failed`. Keep any local tunnel running and update Moyasar if its URL
-changes. Webhook verification codes appear in the API logs.
-
-Optional webhook-only Cloudflare tunnel, in two separate host terminals (requires
-local Python and Cloudflare's `cloudflared` command):
+An optional local webhook-only tunnel uses two host terminals:
 
 ```bash
-# Terminal 1: forward only POST /webhooks/moyasar to the Docker API on port 8000.
 python3 scripts/run_webhook_proxy.py
 ```
 
-The proxy listens on `127.0.0.1:8001`; the API itself stays bound to localhost.
-
 ```bash
-# Terminal 2: expose only the proxy.
 cloudflared tunnel --url http://127.0.0.1:8001
 ```
 
-Set Moyasar's URL to `https://YOUR-TUNNEL.trycloudflare.com/webhooks/moyasar`.
-The proxy example assumes `API_PORT=8000`. See the [TopUp flow](MOYASAR_TOPUP_FLOW.md)
-for creating a payment with the returned Payment ID, amount and currency. Docker
-startup does not create a payment or run a mobile checkout automatically.
+Keep the proxy/tunnel running and update the webhook URL when it changes. The
+proxy assumes the default API port. See the payment guides for the full flow.
 
-## Logs, support alerts and stopping
+## Automated tests
 
-```bash
-# API requests, exceptions and webhook verification codes
-docker compose --env-file .env.docker logs -f api
-
-# Payment processing and reconciliation (after enabling the payments profile)
-docker compose --env-file .env.docker logs -f moyasar-worker reconciliation-worker
-
-# Read durable support alerts; this does not retry or change payments
-docker compose --env-file .env.docker exec api python scripts/list_payment_support_alerts.py --limit 50
-
-# Stop the full stack, preserving saved data
-docker compose --env-file .env.docker --profile payments down
-```
-
-`Ctrl+C` while following `logs -f` closes the log viewer, not the containers.
-`docker compose down -v` also deletes volumes and their data; do not use it to
-perform a normal stop.
-
-After code changes, rebuild with `up -d --build`. After changing `.env.docker`, run
-`up -d` to recreate affected containers; `restart` alone does not reload environment
-variables. Include `--profile payments` if you use the workers. Do not run old host
-workers against the same database alongside the new container workers.
-
-## Run automated tests inside Docker
+Docker, with no local Python installation:
 
 ```bash
 docker compose --env-file .env.docker build tests
 docker compose --env-file .env.docker run --rm --no-deps tests
 ```
 
-These tests use isolated SQLite data and simulated provider responses. They do not
-create real payments or use your Moyasar key. The runtime image excludes pytest;
-the separate test target installs the locked development dependencies.
-
-Run only the beginner example:
+Optional real Redis integration tests, after Redis is running in the same Compose
+project (database 15 is reserved here for these isolated test records):
 
 ```bash
-docker compose --env-file .env.docker run --rm --no-deps tests python -m pytest tests/test_amount.py -v -o cache_dir=/tmp/pytest-cache
+docker compose --env-file .env.docker run --rm --no-deps -e DEVICE_SESSIONS_TEST_REDIS_URL=redis://redis:6379/15 -e RECIPIENT_TEST_REDIS_URL=redis://redis:6379/15 tests
 ```
 
-Real PostgreSQL locking tests are separate; see `scripts/test_topup_concurrency.py`
-and [test results](TOPUP_TEST_RESULTS.md). SQLite tests do not prove row-lock behavior.
+Local Python:
 
-## Ports and troubleshooting
+```bash
+uv sync --locked
+DEBUG=false .venv/bin/python -m pytest tests -q
+```
 
-| Service | On your computer | Inside Compose |
+Run the `tests` directory. `scripts/test_live_idempotency.py` and
+`scripts/test_topup_concurrency.py` are opt-in integration tools, not ordinary
+pytest unit tests. The former creates disposable accounts and seeds test balances;
+the latter creates and removes a temporary PostgreSQL schema. Read their headers
+before explicitly running them against a local test environment.
+
+Most tests use isolated SQLite data and mocked provider responses; optional Redis
+tests use the URL you explicitly provide. A passing SQLite test does not prove
+PostgreSQL row-lock behavior. Test scope, counts and current handoff checks are
+recorded in [PROGRESS.md](PROGRESS.md), with earlier payment/transfer results linked
+below. There is no green CI test claim: the existing GitHub workflow is a separate
+Codex review workflow and depends on its configured repository secret.
+
+## API map
+
+All business routes require a Bearer token except registration, login, refresh,
+password recovery, health, public app information and provider-authenticated webhook
+receipt. Refresh uses its own refresh-token credential. Swagger is the full schema.
+
+| Area | Routes |
+| --- | --- |
+| App information | `GET /app/about`, `GET /app/support` |
+| Authentication | `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/logout-all`, `/auth/forgot-password`, `/auth/reset-password` |
+| Device sessions | `GET /auth/sessions`, `DELETE /auth/sessions/{session_id}` |
+| Profile | `GET/PATCH /users/me`, `POST /users/me/change-password` |
+| Wallets | `GET/POST /wallets`, `GET /wallets/{wallet_id}` |
+| Ledger and CSV | `GET /wallets/{wallet_id}/entries`, `GET /wallets/{wallet_id}/statement` |
+| Recipient verification | `POST /wallets/recipient/resolve` |
+| Estimated total | `GET /wallets/summary?base_currency=AED` |
+| Transfers | `POST /transfers` with `Idempotency-Key` |
+| History | `GET /transactions`, `GET /transactions/{transaction_id}` |
+| Top-ups | `POST /topups` with `Idempotency-Key`, `GET /topups/{topup_id}` |
+| Webhooks | `POST /webhooks/moyasar` with provider authentication |
+| Health | `GET /health`; existing Redis diagnostic URL: `GET /health/health/redis` |
+
+## Logs, ports and stopping
+
+```bash
+docker compose --env-file .env.docker logs -f api
+docker compose --env-file .env.docker logs -f moyasar-worker reconciliation-worker
+docker compose --env-file .env.docker exec api python scripts/list_payment_support_alerts.py --limit 50
+docker compose --env-file .env.docker --profile payments down
+```
+
+Closing a log follower does not stop containers. Normal shutdown keeps PostgreSQL
+and Redis volumes. `down -v` deletes the selected project's data; use it only for
+disposable test projects.
+
+| Service | Host address | Compose address |
 | --- | --- | --- |
 | API | `127.0.0.1:8000` | `api:8000` |
 | PostgreSQL | `127.0.0.1:5433` | `postgres:5432` |
@@ -328,114 +303,45 @@ and [test results](TOPUP_TEST_RESULTS.md). SQLite tests do not prove row-lock be
 | Mailpit SMTP | `127.0.0.1:1025` | `mailpit:1025` |
 | Mailpit inbox | `127.0.0.1:8025` | `mailpit:8025` |
 
-- **Port already in use:** stop your old local API, or change `API_PORT` in
-  `.env.docker` (for example `8002`). The same applies to `POSTGRES_PORT` and
-  `REDIS_PORT`. Open the corresponding port in your browser.
-- **Existing Docker database:** the default project name follows the directory
-  name. Using this repository in the same directory reuses its existing
-  `postgres_data` volume. Use a different `-p PROJECT_NAME` plus different host
-  ports for an isolated copy, and use that project name on every Compose command.
-- **API does not start:** inspect `docker compose --env-file .env.docker logs migrate api`.
-  A migration failure blocks API/worker startup; fix it instead of deleting data.
-- **Worker exits:** check its logs and the real sandbox key. The worker cannot
-  generate a valid provider credential.
-- **TopUp stays PENDING:** inspect both worker logs and verify the public webhook
-  URL. `404`/waiting payments remain pending and are checked later. Only a verified
-  matching paid payment can credit the wallet.
-- **Changed code has no effect:** images contain a copy of the code; rebuild them.
-  This setup does not bind-mount your source or enable auto-reload.
+- **Port occupied:** stop the old service or set alternate host ports in
+  `.env.docker`, including Mailpit ports when a local inbox already runs.
+- **Startup fails:** inspect `logs migrate api`; migration failure blocks API
+  startup. Do not delete saved data as a routine fix.
+- **No code update:** rebuild the image. Source is copied into it, not bind-mounted.
+- **Payment worker exits:** verify your own sandbox credential and enabled currency.
+- **Top-up remains pending:** verify the callback URL, worker logs and payment
+  status; only a matching paid provider payment can credit money.
+- **No support contacts:** configure public `SUPPORT_EMAIL` and/or `SUPPORT_URL`.
 
-This Compose stack is for local learning and sandbox demos. Database credentials
-are local-development defaults and published ports are bound to loopback. Public
-production hosting, TLS, backups and support notification delivery are separate work.
+The stack binds ports to localhost and uses local-development database defaults.
+Public production hosting, TLS, secret rotation, backups and final security review
+are not provided merely by running Compose.
 
-## Local Python development (optional)
-
-Python 3.14 and `uv` are used by the Docker build. To work outside Docker:
+## Local Python alternative
 
 ```bash
 uv sync --locked
 ```
 
-Use a local `.env` containing `SECRET_KEY`, `MOYASAR_SECRET_KEY`, optional
-`MOYASAR_WEBHOOK_SECRET`, `DATABASE_URL` and `REDIS_URL`. Local URLs use `localhost`
-and the published host ports; container URLs use `postgres` and `redis`.
-Start only the database services if the API will run on your host:
+Create an ignored `.env` with `SECRET_KEY`, `MOYASAR_SECRET_KEY`, `DATABASE_URL`,
+`REDIS_URL` and optional webhook/SMTP/public-contact settings. Use host addresses,
+not Compose service names. Start the required services:
 
 ```bash
-docker compose --env-file .env.docker up -d postgres redis
+docker compose --env-file .env.docker up -d postgres redis mailpit
 DEBUG=false .venv/bin/python -m alembic upgrade head
 DEBUG=false .venv/bin/python -m uvicorn app.main:app --reload
 ```
 
-## What do Dockerfile and compose.yaml do?
+## Reviewer reading order
 
-| File | Responsibility |
-| --- | --- |
-| `Dockerfile` | Builds the application's image: Python, locked dependencies, source code and the default start command. |
-| `compose.yaml` | Runs the whole stack: API, PostgreSQL, Redis, migrations and optional workers, with their network, volumes and startup order. |
+1. [PROGRESS.md](PROGRESS.md): implementation status, verification evidence and work remaining.
+2. [Business guide](BUSINESS_GUIDE.md): domain models and learning diagrams; consult current source and progress for newer implementation status.
+3. [Device sessions](DEVICE_SESSIONS_GUIDE.md): Redis pointers, revocation and the mobile error contract.
+4. [Wallet Summary](WALLET_SUMMARY_GUIDE.md) and [Statement Export](WALLET_STATEMENT_GUIDE.md).
+5. [Top-up flow](MOYASAR_TOPUP_FLOW.md), [worker guide](MOYASAR_WORKER_GUIDE.md) and [reconciliation](RECONCILIATION_GUIDE.md).
+6. [Transfer results](TRANSFER_TEST_RESULTS.md) and [earlier top-up checks](TOPUP_TEST_RESULTS.md): historical verification, not a claim that every check reruns automatically.
 
-```text
-Dockerfile -> build -> application image -> API / worker containers
-compose.yaml -> connects those containers to PostgreSQL and Redis
-```
-
-## Test it as a new user
-
-1. Commit and push your changes, then clone the repository into a **new folder**.
-   Do not copy your existing `.env`, `.env.docker` or `.venv` into it.
-2. Follow the environment-generation command above. If testing beside another
-   running copy, set `API_PORT=18081`, `POSTGRES_PORT=15434`, `REDIS_PORT=16381`
-   in the new `.env.docker` and use a distinct Compose project name.
-3. Start the isolated copy and inspect its status:
-
-```bash
-docker compose --env-file .env.docker -p nexa-fresh-check up -d --build
-docker compose --env-file .env.docker -p nexa-fresh-check ps -a
-```
-
-4. Open `http://localhost:18081/docs` with the alternate ports above. Check health,
-   register, log in, and list the new user's zero-balance wallet. `migrate` should
-   show Exited (0); API, PostgreSQL and Redis should be healthy.
-5. Run the automated tests from that copy:
-
-```bash
-docker compose --env-file .env.docker -p nexa-fresh-check build tests
-docker compose --env-file .env.docker -p nexa-fresh-check run --rm --no-deps tests
-docker compose --env-file .env.docker -p nexa-fresh-check down
-```
-
-The distinct project name creates separate volumes. Reusing that name later also
-reuses its data; choose a new project name to test first startup again. For a target
-Windows or Intel/AMD device, repeat the steps there too: a successful local Linux
-container test does not itself test every host OS or CPU architecture.
-
-## Docker verification
-
-Validated on 2026-11-08 in an isolated Docker project: fresh PostgreSQL migrations,
-API health/docs, account registration, login, zero-balance wallet lookup and Redis
-refresh-token rotation. Both workers started against an empty queue using dummy
-sandbox-shaped credentials; this was not a real Moyasar payment test.
-The Linux test container passed 79 tests (two dependency deprecation warnings).
-Existing local databases and payment credentials were not used.
-
-## API and learning references
-
-| Area | Main routes |
-| --- | --- |
-| Authentication | `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/logout-all`, `/auth/forgot-password`, `/auth/reset-password` |
-| Users | `/users/me`, `/users/me/change-password` |
-| Wallets | `/wallets`, `/wallets/{id}`, `/wallets/{id}/ledger` |
-| Transfers | `POST /transfers` |
-| Transactions | `GET /transactions`, `GET /transactions/{id}` |
-| TopUps | `POST /topups`, `GET /topups/{id}` |
-| Webhooks | `POST /webhooks/moyasar` |
-
-- [Business rules and table relationships](BUSINESS_GUIDE.md)
-- [Moyasar TopUp flow](MOYASAR_TOPUP_FLOW.md)
-- [Worker, retries, leases and support alerts](MOYASAR_WORKER_GUIDE.md)
-- [Reconciliation](RECONCILIATION_GUIDE.md)
-- [Test results](TOPUP_TEST_RESULTS.md) and [progress log](PROGRESS.md)
-
-Implementation references: [Compose startup order](https://docs.docker.com/compose/how-tos/startup-order/)
-and [locked uv dependencies in Docker](https://docs.astral.sh/uv/guides/integration/docker/).
+Review money-movement invariants first: ownership, supported currency, Decimal
+precision, idempotency, lock ordering, one commit/rollback boundary and one provider
+credit. Then review session/reset failure paths and external-integration behavior.

@@ -1,4 +1,4 @@
-from pydantic import Field, SecretStr
+from pydantic import EmailStr, Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # This file used to read environment variables from .env file
@@ -7,6 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Nexa Wallet"
+    APP_DESCRIPTION: str = "Manage your wallets, send transfers, and review your transaction history."
+    SUPPORT_EMAIL: EmailStr | None = None
+    SUPPORT_URL: HttpUrl | None = None
     debug: bool = True
     # database_url: str = "postgresql+psycopg://nexa_user:nexa_password@localhost:5432/nexa_wallet"
     database_url: str = "postgresql+psycopg://nexa:nexa_password@localhost:5433/nexa_wallet_dev"
@@ -28,6 +31,12 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "nexa@local.test"
     SMTP_STARTTLS: bool = False
     MOYASAR_TOPUP_ALLOWED_CURRENCIES: str = "SAR,AED"
+
+    @field_validator("SUPPORT_EMAIL", "SUPPORT_URL", mode="before")
+    @classmethod
+    def empty_support_contact_is_unconfigured(cls, value):
+        # Environment templates leave optional public contacts blank.
+        return None if isinstance(value, str) and not value.strip() else value
     
     model_config = SettingsConfigDict(
         env_file=".env",
