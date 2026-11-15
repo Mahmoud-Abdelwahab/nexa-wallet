@@ -8,6 +8,7 @@ from app.schemas.ledger import LedgerEntryResponse
 from app.schemas.wallet import CreateWalletRequest, WalletResponse
 from app.services.wallet_service import WalletService
 from app.api.routes.dependencies import get_current_user
+from app.api.routes.wallet_statement import router as statement_router
 
 
 # These endpoints use synchronous SQLAlchemy; FastAPI runs them in its thread pool.
@@ -123,3 +124,7 @@ def get_wallet_statement(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
+
+
+# The statement subrouter inherits the /wallets prefix.
+router.include_router(statement_router)
