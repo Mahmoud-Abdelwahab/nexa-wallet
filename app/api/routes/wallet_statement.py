@@ -17,7 +17,7 @@ from app.services.wallet_statement_service import (
 )
 
 
-router = APIRouter(prefix="/wallets", tags=["Wallets"])
+router = APIRouter()  # Included under the existing /wallets parent router.
 
 
 @router.get("/{wallet_id}/statement", response_class=Response)
