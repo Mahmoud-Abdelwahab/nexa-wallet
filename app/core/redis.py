@@ -20,7 +20,7 @@
 #      Idle Expiration           Absolute Expiration
 #         30 days                    90 days
 #           │                         │
-#        Redis TTL              stored timestamp  
+#        Redis TTL              stored timestamp
 # إذن الـ contract بتاعنا من دلوقتي:
 # Policy	Value
 # Access Token	Short-lived

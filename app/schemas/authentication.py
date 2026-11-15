@@ -2,6 +2,8 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.password import Password
+
 
 class RegisterRequest(BaseModel):
 
@@ -12,10 +14,7 @@ class RegisterRequest(BaseModel):
 
     email: EmailStr
 
-    password: str = Field(
-        min_length=8,
-        max_length=100,
-    )
+    password: Password
 
     mobile: str = Field(
         min_length=8,

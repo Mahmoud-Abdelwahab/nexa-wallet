@@ -62,6 +62,82 @@ request, and choose a new key for a new operation.
 The basic API works without a Moyasar key. Real sandbox payment verification needs
 your own provider key and the optional payment workers below.
 
+## Password recovery and local email
+
+The Docker stack includes Mailpit. Open <http://localhost:8025> to read captured
+emails; they are not delivered to real inboxes. Existing `.env.docker` files work
+with the new defaults. To change the inbox port, set `MAILPIT_UI_PORT`.
+
+For an API running on your Mac, start Mailpit with either command:
+
+```bash
+# Docker (the API itself can still run with local Python):
+docker run -d --rm --name nexa-mailpit -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 axllent/mailpit:v1.27
+
+# Or Homebrew: install once, then run mailpit in a separate terminal.
+brew install mailpit
+mailpit
+```
+
+Run only one Mailpit instance on these ports. Add these settings to your local
+`.env` (Compose uses `SMTP_HOST=mailpit` instead):
+
+```ini
+SMTP_HOST=127.0.0.1
+SMTP_PORT=1025
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM=nexa@local.test
+SMTP_STARTTLS=false
+```
+
+Restart the API after changing settings. Test through <http://localhost:8000/docs>:
+
+1. Register a test user, then call `POST /auth/forgot-password` with
+   `{"email":"alex@example.com"}`. Existing, unknown and rate-limited emails all
+   receive `{"message":"If the email exists, reset instructions will be sent."}`.
+2. Read the token in Mailpit, then call `POST /auth/reset-password` with
+   `{"token":"TOKEN_FROM_EMAIL","new_password":"NewStrongPassword123!"}`.
+3. Log in with the new password. The previous password, access tokens, refresh
+   tokens, reused reset token and other reset tokens issued before this reset
+   must all fail. The password policy is shared with registration: 8–100 characters.
+
+Reset tokens expire after 15 minutes. Redis stores their SHA-256 hashes and uses
+atomic `GETDEL` to prevent reuse. Forgot-password requests allow three attempts per
+normalized email and ten per client IP per 15 minutes; excess requests silently
+return the generic response. IP limits use the direct client address, not untrusted
+forwarding headers. Behind a proxy, configure trusted proxy handling in the server
+so the direct address represents the client.
+
+SMTP runs in a background task and blocking mail delivery runs in a worker thread.
+Failed delivery removes the reset token when Redis is available and logs a warning
+without tokens or recipient details. In-process background delivery has no durable
+retry queue: request another email if delivery is interrupted.
+
+Password and `token_version` change in one database transaction. Refresh sessions
+now carry that version as well, so a failed Redis session cleanup cannot revive old
+credentials. Legacy refresh sessions default to version zero and are rejected once
+the user's version has changed. A database/Redis failure before completion returns
+503; a consumed token is never restored, so request a new email before retrying.
+
+To use the Gmail configuration from the recovery setup, change SMTP settings only
+(keep the account's App Password in your ignored environment file):
+
+```ini
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your-nexa-email@gmail.com
+SMTP_PASSWORD=YOUR_GOOGLE_APP_PASSWORD
+SMTP_FROM=your-nexa-email@gmail.com
+SMTP_STARTTLS=true
+```
+
+Run the automated recovery tests without live services:
+
+```bash
+DEBUG=false .venv/bin/python -m pytest tests/test_password_reset.py -q
+```
+
 ## Enable Moyasar sandbox payments
 
 Edit `.env.docker` locally:
@@ -172,6 +248,8 @@ and [test results](TOPUP_TEST_RESULTS.md). SQLite tests do not prove row-lock be
 | API | `127.0.0.1:8000` | `api:8000` |
 | PostgreSQL | `127.0.0.1:5433` | `postgres:5432` |
 | Redis | `127.0.0.1:6379` | `redis:6379` |
+| Mailpit SMTP | `127.0.0.1:1025` | `mailpit:1025` |
+| Mailpit inbox | `127.0.0.1:8025` | `mailpit:8025` |
 
 - **Port already in use:** stop your old local API, or change `API_PORT` in
   `.env.docker` (for example `8002`). The same applies to `POSTGRES_PORT` and
@@ -268,7 +346,7 @@ Existing local databases and payment credentials were not used.
 
 | Area | Main routes |
 | --- | --- |
-| Authentication | `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/logout-all` |
+| Authentication | `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/logout-all`, `/auth/forgot-password`, `/auth/reset-password` |
 | Users | `/users/me`, `/users/me/change-password` |
 | Wallets | `/wallets`, `/wallets/{id}`, `/wallets/{id}/ledger` |
 | Transfers | `POST /transfers` |

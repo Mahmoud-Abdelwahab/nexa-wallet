@@ -202,7 +202,9 @@ class AuthService:
             refresh_token,
             token_hash,
             session,
-        ) = self.refresh_token_service.create_refresh_session(user.id)
+        ) = self.refresh_token_service.create_refresh_session(
+            user.id, user.token_version
+        )
 
         response = self._create_auth_response_sync(user, refresh_token)
         return response, token_hash, session
@@ -284,6 +286,11 @@ class AuthService:
         )
 
         if user is None:
+            raise BusinessError("Invalid refresh token")
+
+        # A password reset remains effective even if Redis revocation fails.
+        version = await run_in_threadpool(lambda: user.token_version)
+        if session.token_version != version:
             raise BusinessError("Invalid refresh token")
 
         # 5. Generate a new refresh token while keeping the same session identity

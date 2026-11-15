@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REFRESH_TOKEN_IDLE_DAYS: int = 30
     REFRESH_TOKEN_ABSOLUTE_DAYS: int = 90
+    SMTP_HOST: str = "127.0.0.1"
+    SMTP_PORT: int = 1025
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: SecretStr = SecretStr("")
+    SMTP_FROM: str = "nexa@local.test"
+    SMTP_STARTTLS: bool = False
     MOYASAR_TOPUP_ALLOWED_CURRENCIES: str = "SAR,AED"
     
     model_config = SettingsConfigDict(
