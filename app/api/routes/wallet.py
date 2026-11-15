@@ -1,13 +1,24 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.errors import BusinessError
+from app.core.redis import redis_client
 from app.database import get_db
 from app.models.user import User
 from app.schemas.ledger import LedgerEntryResponse
+from app.schemas.recipient import RecipientLookupRequest, RecipientLookupResponse
 from app.schemas.wallet import CreateWalletRequest, WalletResponse
+from app.services.recipient_rate_limit import allow_recipient_lookup
+from app.services.recipient_service import RecipientService
 from app.services.wallet_service import WalletService
 from app.api.routes.dependencies import get_current_user
+
+
+logger = logging.getLogger(__name__)
 
 
 # These endpoints use synchronous SQLAlchemy; FastAPI runs them in its thread pool.
@@ -123,3 +134,48 @@ def get_wallet_statement(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
+
+
+async def enforce_recipient_rate_limit(
+    current_user: User = Depends(get_current_user),
+) -> None:
+    daily_limit = settings.RECIPIENT_LOOKUP_DAILY_LIMIT
+    try:
+        allowed = await allow_recipient_lookup(redis_client, current_user.id, daily_limit)
+    except RedisError:
+        logger.warning(
+            "Recipient lookup rejected user_id=%s reason=rate_limit_unavailable",
+            current_user.id,
+        )
+        raise HTTPException(503, "Recipient lookup is temporarily unavailable") from None
+    if not allowed:
+        logger.warning(
+            "Recipient lookup rejected user_id=%s reason=rate_limit", current_user.id
+        )
+        raise HTTPException(429, "Too many recipient lookups. Please try again later.")
+
+
+@router.post(
+    "/recipient/resolve",
+    response_model=RecipientLookupResponse,
+    dependencies=[Depends(enforce_recipient_rate_limit)],
+)
+def resolve_recipient(
+    payload: RecipientLookupRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return RecipientService(db).resolve(
+            current_user_id=current_user.id,
+            sender_wallet_id=payload.sender_wallet_id,
+            recipient_wallet_id=payload.recipient_wallet_id,
+        )
+    except HTTPException as error:
+        # Record rejected attempts without logging names, request bodies or tokens.
+        logger.warning(
+            "Recipient lookup rejected user_id=%s status=%s",
+            current_user.id,
+            error.status_code,
+        )
+        raise

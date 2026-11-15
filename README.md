@@ -62,6 +62,43 @@ request, and choose a new key for a new operation.
 The basic API works without a Moyasar key. Real sandbox payment verification needs
 your own provider key and the optional payment workers below.
 
+## Recipient verification
+
+Call `POST /wallets/recipient/resolve` with a Bearer access token and:
+
+```json
+{"sender_wallet_id": 1, "recipient_wallet_id": 25}
+```
+
+The sender wallet must belong to the authenticated user. The recipient must be a
+different wallet, ACTIVE, and use the same currency. A valid lookup returns only:
+
+```json
+{"wallet_id": 25, "display_name": "Ahmed M.", "currency": "AED"}
+```
+
+Names are masked from the existing `User.username` field. A single-word name
+returns its first character followed by `***`. Missing, inactive and
+different-currency recipients all return the same 404. Looking up the sender's
+own wallet ID returns 400; using another user's sender wallet returns 404.
+
+Redis limits each authenticated user to **5 requests per minute and 50 per 24
+hours**. Each counter's window starts at its first request; later requests do not
+extend it. All attempts reaching the limiter count, including rejected lookups.
+Exceeding either limit returns 429; unavailable Redis returns 503. The daily limit
+is configured by `RECIPIENT_LOOKUP_DAILY_LIMIT` (default 50).
+Rejected searches are logged with the requesting user's ID and a reason/status,
+without recipient names or full request bodies.
+
+This endpoint is for display and confirmation. Transfer authorization, currency
+and status checks, and database locks remain in the transfer flow.
+
+```bash
+DEBUG=false .venv/bin/python -m pytest tests/test_recipient.py -q
+# Optional Lua/concurrency checks against a dedicated test Redis:
+DEBUG=false RECIPIENT_TEST_REDIS_URL=redis://127.0.0.1:16386/0 .venv/bin/python -m pytest tests/test_recipient_rate_limit.py -q
+```
+
 ## Password recovery and local email
 
 The Docker stack includes Mailpit. Open <http://localhost:8025> to read captured

@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # This file used to read environment variables from .env file
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REFRESH_TOKEN_IDLE_DAYS: int = 30
     REFRESH_TOKEN_ABSOLUTE_DAYS: int = 90
+    RECIPIENT_LOOKUP_DAILY_LIMIT: int = Field(default=50, gt=0)
     SMTP_HOST: str = "127.0.0.1"
     SMTP_PORT: int = 1025
     SMTP_USERNAME: str = ""
