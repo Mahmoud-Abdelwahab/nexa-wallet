@@ -62,6 +62,22 @@ request, and choose a new key for a new operation.
 The basic API works without a Moyasar key. Real sandbox payment verification needs
 your own provider key and the optional payment workers below.
 
+## Device sessions
+
+Login and registration accept optional `device_name` and `platform` metadata.
+Use `GET /auth/sessions` and `DELETE /auth/sessions/{session_id}` to manage devices.
+The list includes `is_current`; hide its delete button on mobile. The server
+rejects deletion of the current session with 400/`CURRENT_SESSION_DELETE_FORBIDDEN`;
+use `/auth/logout` to sign out that device.
+Access JWTs carry `sid`; every protected request checks its live Redis session, so
+deleting a device revokes its existing access and refresh tokens. Other devices
+remain active. A revoked session returns 401 with `detail.code=SESSION_REVOKED` for
+the mobile logout interceptor; temporary authentication outages return 503.
+
+**Deployment:** existing tokens without `sid`/an active session pointer require a
+fresh login once. See the [device sessions guide](DEVICE_SESSIONS_GUIDE.md) for the
+request fields, mobile error handling, Redis flow, limits and verification steps.
+
 ## Recipient verification
 
 Call `POST /wallets/recipient/resolve` with a Bearer access token and:

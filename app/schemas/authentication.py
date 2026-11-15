@@ -3,10 +3,12 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.schemas.password import Password
+from app.schemas.device_session import DeviceMetadata
 
 
-class RegisterRequest(BaseModel):
-
+class RegisterRequest(DeviceMetadata):
+    # يرث بيانات الجهاز الاختيارية وحدودها من DeviceMetadata من غير تكرار التعريف.
+    # التسجيل بيعمل Login كمان، فمحتاجين بيانات الجهاز للجلسة الأولى.
     username: str = Field(
         min_length=3,
         max_length=50,
@@ -41,6 +43,7 @@ class AuthResponse(BaseModel):
     user: UserResponse
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(DeviceMetadata):
+    # الـ clients القديمة تقدر تبعت email/password بس؛ بيانات الجهاز لها defaults.
     email: str
     password: str

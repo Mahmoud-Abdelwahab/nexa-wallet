@@ -36,6 +36,8 @@ class RefreshTokenService:
         self,
         user_id: int,
         token_version: int = 0,
+        device_name: str = "Unknown device",
+        platform: str = "Unknown",
     ) -> tuple[str, str, RefreshSession]:
         """Create the initial token, its hash, and a new refresh session. used in login and register endpoints"""
 
@@ -43,11 +45,17 @@ class RefreshTokenService:
 
         now = datetime.now(timezone.utc)
 
+        # Login جديد: sid عشوائية مستقلة عن قيمة Refresh token.
+        # device_name/platform للعرض، والتاريخين يبدأوا بنفس توقيت السيرفر UTC.
         session = RefreshSession(
             # session_id !=  refresh_token it is just a random id unique for each session usefull when user_id logged in more than one devcie
             session_id=secrets.token_urlsafe(16),
             user_id=user_id,
             token_version=token_version,
+            device_name=device_name,
+            platform=platform,
+            created_at=now,
+            last_seen_at=now,
             absolute_expires_at=now + timedelta(
                 days=settings.REFRESH_TOKEN_ABSOLUTE_DAYS
             ),
@@ -97,10 +105,18 @@ class RefreshTokenService:
             refresh_token
         )
 
+        # قبل: sid=S1, hash=AAA, created_at=T0, last_seen_at=T1
+        # بعد: sid=S1, hash=BBB, created_at=T0, last_seen_at=دلوقتي
+        # بنغيّر بيانات التوكن، مش هوية الجهاز أو بداية الجلسة أو نهايتها القصوى.
+        # الدالة دي تجهّز القيم فقط؛ الـ Redis Store هي اللي تحفظ Rotation ذريًّا.
         new_session = RefreshSession(
             session_id=session.session_id,  # same as the old one
             user_id=session.user_id,  # same no change
             token_version=session.token_version,
+            device_name=session.device_name,
+            platform=session.platform,
+            created_at=session.created_at,
+            last_seen_at=datetime.now(timezone.utc),
             # newly calculated based on remaining time from 90 day
             absolute_expires_at=session.absolute_expires_at,
         )

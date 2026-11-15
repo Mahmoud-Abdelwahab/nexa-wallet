@@ -1,3 +1,11 @@
+# فلو الجلسة الجديدة:
+# Login/Register -> User من DB -> RefreshSession + sid -> JWT فيها sid
+#                                                    -> حفظ جلسة Redis -> Response
+#
+# فلو التجديد:
+# Refresh token -> سجل Redis -> فحص User/النسخة -> Rotation ذرّية -> JWT بنفس sid
+#
+# مهم: Refresh token بتتغيّر مع كل تجديد، لكن sid ثابتة لنفس جلسة الدخول.
 from datetime import date
 
 from sqlalchemy.orm import Session
@@ -72,6 +80,8 @@ class AuthService:
         password: str,
         mobile: str,
         date_of_birth: date,
+        device_name: str = "Unknown device",
+        platform: str = "Unknown",
     ) -> AuthResponse:
         # Keep SQLAlchemy and password hashing off the event loop.
         user = await run_in_threadpool(
@@ -82,7 +92,8 @@ class AuthService:
             mobile,
             date_of_birth,
         )
-        return await self._build_auth_response(user)
+        # تسجيل الحساب بيعمل جلسة للجهاز الحالي، عشان كده بنمرّر بياناته بعد الحفظ.
+        return await self._build_auth_response(user, device_name, platform)
 
     def _register_user_sync(
         self,
@@ -146,10 +157,14 @@ class AuthService:
     #      |
     #      v
     # _build_auth_response -> store Redis session -> return AuthResponse
-    async def login_user(self, email: str, password: str) -> AuthResponse:
+    async def login_user(
+        self, email: str, password: str,
+        device_name: str = "Unknown device", platform: str = "Unknown",
+    ) -> AuthResponse:
         # The database query and bcrypt verification are both synchronous.
         user = await run_in_threadpool(self._login_user_sync, email, password)
-        return await self._build_auth_response(user)
+        # كل Login ناجح بيبدأ جلسة مستقلة، حتى لو الاسم نفس اسم جهاز دخل قبل كده.
+        return await self._build_auth_response(user, device_name, platform)
 
     def _login_user_sync(self, email: str, password: str) -> User:
         email = email.lower()
@@ -180,13 +195,16 @@ class AuthService:
     #      |
     #      v
     # Return AuthResponse
-    async def _build_auth_response(self, user: User) -> AuthResponse:
+    async def _build_auth_response(
+        self, user: User, device_name: str = "Unknown device", platform: str = "Unknown"
+    ) -> AuthResponse:
         # A committed ORM object may reload attributes on access. Read and
         # serialize it in a worker too, before awaiting Redis on the event loop.
         response, token_hash, session = await run_in_threadpool(
-            self._build_auth_response_sync, user
+            self._build_auth_response_sync, user, device_name, platform
         )
 
+        # ما نرجّعش التوكنات قبل حفظ الجلسة؛ وإلا JWT هتوصل للعميل من غير sid نشطة.
         await self.refresh_token_store.store_session(
             token_hash=token_hash,
             session=session,
@@ -196,6 +214,8 @@ class AuthService:
     def _build_auth_response_sync(
         self,
         user: User,
+        device_name: str = "Unknown device",
+        platform: str = "Unknown",
     ) -> tuple[AuthResponse, str, RefreshSession]:
 
         (
@@ -203,22 +223,26 @@ class AuthService:
             token_hash,
             session,
         ) = self.refresh_token_service.create_refresh_session(
-            user.id, user.token_version
+            user.id, user.token_version, device_name, platform
         )
 
-        response = self._create_auth_response_sync(user, refresh_token)
+        # نفس ID اللي جوّه RefreshSession يدخل في الـ JWT، مش ID جديدة للتوكن.
+        response = self._create_auth_response_sync(user, refresh_token, session.session_id)
         return response, token_hash, session
 
     def _create_auth_response_sync(
         self,
         user: User,
         refresh_token: str,
+        session_id: str,
     ) -> AuthResponse:
         # Called in a worker: all ORM attribute reads finish before returning.
         access_token = create_access_token(
             data={
                 "sub": str(user.id),
                 "token_version": user.token_version,
+                # sid لإلغاء جهاز واحد؛ token_version لإلغاء دخول الحساب كله.
+                "sid": session_id,
             }
         )
         return AuthResponse(
@@ -312,8 +336,10 @@ class AuthService:
             raise BusinessError("Invalid refresh token")
 
         # 7. Create a new access token and return both new tokens to the client.
+        # بنرجّع Access جديدة بنفس sid؛ الـ Access القديمة لنفس الجلسة تفضل صالحة
+        # لحد exp بتاعتها، طالما الجهاز نفسه ما اتلغاش.
         return await run_in_threadpool(
-            self._create_auth_response_sync, user, new_refresh_token
+            self._create_auth_response_sync, user, new_refresh_token, new_session.session_id
         )
 
     # logout -> hash refresh token -> await revoking this session only
@@ -321,8 +347,16 @@ class AuthService:
         self,
         refresh_token: str,
         user_id: int,
+        session_id: str | None = None,
     ) -> None:
-
+        if session_id is not None:
+            # مسار Logout من الـ API: sid جاية من JWT بعد التحقق، مش من الـ body.
+            # حتى لو الـ Refresh في الـ body قديمة بسبب Rotation، الجهاز يخرج فعلًا.
+            # Use the verified JWT sid even if the caller's refresh token was
+            # already rotated. Logout must revoke this device's access too.
+            await self.refresh_token_store.revoke_session_id(user_id, session_id)
+            return
+        # مسار الاستدعاءات القديمة من غير sid: إلغاء Refresh محددة بعد فحص الملكية.
         token_hash = self.refresh_token_service.hash_refresh_token(
             refresh_token
         )
