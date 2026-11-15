@@ -1,8 +1,8 @@
-# 1. إنشاء Engine
+# 1. Create the database engine.
 
-# 2. إنشاء Session Factory
+# 2. Create the session factory.
 
-# 3. Dependency ترجع Session لكل Request
+# 3. Provide one database session per request through a dependency.
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase

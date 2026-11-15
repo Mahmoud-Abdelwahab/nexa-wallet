@@ -4,6 +4,7 @@ import secrets
 import hashlib
 
 from app.schemas.refresh_session import RefreshSession
+from app.schemas.device_session import DevicePlatform
 from app.core.config import settings
 
 # it's responsability is :-
@@ -35,6 +36,9 @@ class RefreshTokenService:
     def create_refresh_session(
         self,
         user_id: int,
+        token_version: int = 0,
+        device_name: str = "Unknown device",
+        platform: DevicePlatform = "Unknown",
     ) -> tuple[str, str, RefreshSession]:
         """Create the initial token, its hash, and a new refresh session. used in login and register endpoints"""
 
@@ -42,10 +46,17 @@ class RefreshTokenService:
 
         now = datetime.now(timezone.utc)
 
+        # New login: generate a random sid independently of the refresh token.
+        # device_name/platform are display metadata; both timestamps start at the server's current UTC time.
         session = RefreshSession(
             # session_id !=  refresh_token it is just a random id unique for each session usefull when user_id logged in more than one devcie
             session_id=secrets.token_urlsafe(16),
             user_id=user_id,
+            token_version=token_version,
+            device_name=device_name,
+            platform=platform,
+            created_at=now,
+            last_seen_at=now,
             absolute_expires_at=now + timedelta(
                 days=settings.REFRESH_TOKEN_ABSOLUTE_DAYS
             ),
@@ -95,9 +106,18 @@ class RefreshTokenService:
             refresh_token
         )
 
+        # Before: sid=S1, hash=AAA, created_at=T0, last_seen_at=T1
+        # After:  sid=S1, hash=BBB, created_at=T0, last_seen_at=now
+        # Change token data while preserving session identity, creation time and absolute expiration.
+        # This method prepares values only; the Redis store persists the rotation atomically.
         new_session = RefreshSession(
             session_id=session.session_id,  # same as the old one
             user_id=session.user_id,  # same no change
+            token_version=session.token_version,
+            device_name=session.device_name,
+            platform=session.platform,
+            created_at=session.created_at,
+            last_seen_at=datetime.now(timezone.utc),
             # newly calculated based on remaining time from 90 day
             absolute_expires_at=session.absolute_expires_at,
         )

@@ -8,12 +8,29 @@ x-app: &app
     SECRET_KEY: ${SECRET_KEY:?Run the Docker environment setup first}
     DATABASE_URL: postgresql+psycopg://nexa:nexa_password@postgres:5432/nexa_wallet_dev
     REDIS_URL: redis://redis:6379/0
+    RECIPIENT_LOOKUP_DAILY_LIMIT: ${RECIPIENT_LOOKUP_DAILY_LIMIT:-50}
+    APP_NAME: ${APP_NAME:-Nexa Wallet}
+    APP_DESCRIPTION: ${APP_DESCRIPTION:-Manage your wallets, send transfers, and review your transaction history.}
+    SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+    SUPPORT_URL: ${SUPPORT_URL:-}
+    SMTP_HOST: ${SMTP_HOST:-mailpit}
+    SMTP_PORT: ${SMTP_PORT:-1025}
+    SMTP_USERNAME: ${SMTP_USERNAME:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_FROM: ${SMTP_FROM:-nexa@local.test}
+    SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
     MOYASAR_SECRET_KEY: ${MOYASAR_SECRET_KEY:-sk_test_YOUR_KEY}
     MOYASAR_WEBHOOK_SECRET: ${MOYASAR_WEBHOOK_SECRET:-}
     MOYASAR_TOPUP_ALLOWED_CURRENCIES: ${MOYASAR_TOPUP_ALLOWED_CURRENCIES:-AED}
   init: true
 
 services:
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+
   postgres:
     image: postgres:16
     environment:
@@ -59,6 +76,8 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 5s

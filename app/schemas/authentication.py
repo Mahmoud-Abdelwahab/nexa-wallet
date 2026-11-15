@@ -2,9 +2,13 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.password import Password
+from app.schemas.device_session import DeviceMetadata
 
-class RegisterRequest(BaseModel):
 
+class RegisterRequest(DeviceMetadata):
+    # Inherit optional device metadata and its validation from DeviceMetadata without duplicating fields.
+    # Registration also logs the user in, so the first session needs device metadata.
     username: str = Field(
         min_length=3,
         max_length=50,
@@ -12,10 +16,7 @@ class RegisterRequest(BaseModel):
 
     email: EmailStr
 
-    password: str = Field(
-        min_length=8,
-        max_length=100,
-    )
+    password: Password
 
     mobile: str = Field(
         min_length=8,
@@ -42,6 +43,7 @@ class AuthResponse(BaseModel):
     user: UserResponse
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(DeviceMetadata):
+    # Older clients can send email/password only; device fields have defaults.
     email: str
     password: str
