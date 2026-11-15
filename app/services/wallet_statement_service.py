@@ -84,7 +84,10 @@ class WalletStatementService:
     ) -> tuple[date, date]:
         # A no-parameter export downloads the last 30 calendar days.
         to_day = end_date or date.today()
-        from_day = start_date or (to_day - timedelta(days=29))
+        try:
+            from_day = start_date or (to_day - timedelta(days=29))
+        except OverflowError as exc:
+            raise InvalidStatementPeriod() from exc
 
         if (
             from_day > to_day
